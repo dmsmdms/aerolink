@@ -1,0 +1,18 @@
+#!/bin/bash
+set -e
+
+# Create system user and group for aerolink if they do not exist
+if ! getent group aerolink > /dev/null; then
+    groupadd --system aerolink
+fi
+
+if ! getent passwd aerolink > /dev/null; then
+    useradd --system --gid aerolink --no-create-home --shell /bin/false aerolink
+fi
+
+# Reload systemd, enable the service on boot, and start it immediately
+systemctl daemon-reload
+systemctl enable aerolink.service
+systemctl start aerolink.service
+
+exit 0

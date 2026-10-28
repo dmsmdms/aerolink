@@ -1,0 +1,14 @@
+/build/
+/.env
+
+/rp2040/build/
+
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties
+*.jks
+*.keystore
+
+/backend/target/

@@ -1,0 +1,7 @@
+Package: aerolink
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: AeroLink Team <admin@aerolink.local>
+Description: AeroLink delivery robot teleoperation backend

@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+
+# Stop and disable the service before removing files
+if systemctl is-active --quiet aerolink; then
+    systemctl stop aerolink
+fi
+if systemctl is-enabled --quiet aerolink; then
+    systemctl disable aerolink
+fi
+
+exit 0

@@ -1,0 +1,16 @@
+#!/bin/bash
+set -e
+
+# If the package is being completely purged, remove the system user and group
+if [ "$1" = "purge" ]; then
+    if getent passwd aerolink > /dev/null; then
+        userdel aerolink || true
+    fi
+    if getent group aerolink > /dev/null; then
+        groupdel aerolink || true
+    fi
+fi
+
+systemctl daemon-reload >/dev/null || true
+
+exit 0
