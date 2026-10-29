@@ -22,12 +22,19 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- ADM-002: position for the admins' map (granted by the Device Owner): GPS during a session only, otherwise
+         passive fixes other apps obtained. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- ROB-008: app updates. Silent for the Device Owner (PWR-014); on Android 12+ also for a self-update when
          "install unknown apps" is allowed for the app (bench phones; Android 13+ also wants the second one). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <application
         android:allowBackup="false"
@@ -57,7 +64,7 @@
         <service
             android:name=".service.RobotLinkService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|camera|microphone" />
+            android:foregroundServiceType="connectedDevice|camera|microphone|location" />
 
         <receiver
             android:name=".service.BootReceiver"

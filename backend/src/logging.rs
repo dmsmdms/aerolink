@@ -16,6 +16,8 @@ use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
+use crate::server::ROBOT_EVENT_TARGET;
+
 /// Events from these targets are not sent to Telegram (avoids loops when Telegram itself fails).
 pub const NO_TELEGRAM_TARGET: &str = "aerolink::telegram";
 
@@ -32,14 +34,17 @@ impl<S: Subscriber> Layer<S> for ErrorLayer {
         }
         let mut text = String::new();
         event.record(&mut FieldWriter(&mut text));
-        let line = format!("{} ERROR {}: {}\n", rfc3339(SystemTime::now()), meta.target(), text);
-        let written = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file)
-            .and_then(|mut f| f.write_all(line.as_bytes()));
-        if let Err(e) = written {
-            eprintln!("cannot write {}: {e}", self.file.display());
+        // Robot errors are stored with the robot (ADM-003); the file is about the server itself.
+        if meta.target() != ROBOT_EVENT_TARGET {
+            let line = format!("{} ERROR {}: {}\n", rfc3339(SystemTime::now()), meta.target(), text);
+            let written = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.file)
+                .and_then(|mut f| f.write_all(line.as_bytes()));
+            if let Err(e) = written {
+                eprintln!("cannot write {}: {e}", self.file.display());
+            }
         }
         if let Some(tx) = &self.telegram {
             if !meta.target().starts_with(NO_TELEGRAM_TARGET) {

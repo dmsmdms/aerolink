@@ -4,6 +4,7 @@
 //! One process, one thread (tokio current-thread runtime): the load is a few WebSocket messages per
 //! session; nginx does TLS, static files, compression and abuse filtering.
 
+mod admin;
 mod auth;
 mod config;
 mod db;
@@ -18,15 +19,16 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 use config::Config;
-use db::Db;
+use db::{Db, Role};
 
 const USAGE: &str = "\
 usage: aerolink <command> [args]
 
 Commands:
   serve                 run the signaling service (default; systemd starts it)
-  operator …            manage console operators
+  operator …            manage console users (operators and admins)
   robot …               manage robots and their tokens
+  fleet …               manage fleets (groups of robots admins are responsible for)
   guard …               firewall bans from nginx's security log
   telegram-test         send a test message with the configured bot
   completion bash       print the bash completion script
@@ -49,17 +51,31 @@ usage: aerolink operator add <email> <name>     add an operator (password from s
        aerolink operator passwd <email>         set a new password (from stdin); logs out every session
        aerolink operator disable <email>        block logins; logs out every session
        aerolink operator enable <email>
-       aerolink operator list                   id, e-mail, name, role, disabled
+       aerolink operator role <email> admin|operator
+       aerolink operator fleets <email> <fleet,…|all>
+                                                fleets an admin sees and manages (ids or names); `all` also
+                                                covers fleets created later and allows managing users
+       aerolink operator list                   id, e-mail, name, role, fleets, disabled
 
-Passwords are read from stdin without echo on a terminal, or as one line from a pipe.";
+Passwords are read from stdin without echo on a terminal, or as one line from a pipe. Role and fleet changes
+apply to the user's next console connection (reload the page); the console's admin pages apply them at once.";
 
 const HELP_ROBOT: &str = "\
-usage: aerolink robot add <name>                add a robot; prints its token once (enter it in the robot app)
+usage: aerolink robot add <name> [fleet]        add a robot (to the default fleet unless given); prints its token
+                                                once (enter it in the robot app)
        aerolink robot token <id>                issue a new token; the old one stops working
        aerolink robot disable <id>              reject the robot's connections (a connected robot keeps its
                                                 connection until `systemctl restart aerolink`)
        aerolink robot enable <id>
-       aerolink robot list                      id, name, disabled";
+       aerolink robot fleet <id> <fleet>        move the robot to another fleet (id or name)
+       aerolink robot list                      id, name, fleet, disabled";
+
+const HELP_FLEET: &str = "\
+usage: aerolink fleet add <name>                add a fleet
+       aerolink fleet list                      id, name
+
+Every robot belongs to one fleet (fleet 1 `default` exists from the start); admins see the fleets given to
+them with `aerolink operator fleets`.";
 
 const HELP_GUARD: &str = "\
 usage: aerolink guard [serve]                   receive nginx's security log and ban abusive addresses with
@@ -82,14 +98,13 @@ Prints the bash completion script. The Debian package installs it already
 
 const COMPLETION_BASH: &str = include_str!("../package/usr/share/bash-completion/completions/aerolink");
 
-const MIN_PASSWORD: usize = 10;
-
 /// The details of a command, for `aerolink help <command>` and `aerolink <command> --help`.
 fn help(command: &str) -> Option<&'static str> {
     Some(match command {
         "serve" => HELP_SERVE,
         "operator" => HELP_OPERATOR,
         "robot" => HELP_ROBOT,
+        "fleet" => HELP_FLEET,
         "guard" => HELP_GUARD,
         "telegram-test" => HELP_TELEGRAM,
         "completion" => HELP_COMPLETION,
@@ -132,7 +147,7 @@ fn main() -> ExitCode {
         ["guard"] | ["guard", "serve"] => guard_serve(cfg),
         ["guard", "list"] => guard::Firewall::new(&cfg.guard_nft).list().map(|text| print!("{text}")),
         ["guard", "unban", ip] => guard_unban(&cfg, ip),
-        ["operator" | "robot", ..] => manage(&cfg, &args),
+        ["operator" | "robot" | "fleet", ..] => manage(&cfg, &args),
         [command, ..] => Err(help(command).unwrap_or(USAGE).to_owned()),
     })
 }
@@ -240,25 +255,42 @@ fn manage(cfg: &Config, args: &[&str]) -> Result<(), String> {
     let found = |ok: bool| if ok { Ok(()) } else { Err("not found".to_owned()) };
     let id = |s: &str| s.parse::<hub::RobotId>().map_err(|_| format!("bad robot id: {s}"));
     let sql = |e: rusqlite::Error| e.to_string();
+    let fleet = |key: &str| db.find_fleet(key).map_err(sql)?.ok_or_else(|| format!("no such fleet: {key}"));
     match args {
         ["operator", "add", email, name] => {
             let hash = auth::hash_password(&read_password()?);
-            let id = db.add_user(email, name, &hash).map_err(sql)?;
+            let id = db.add_user(email, name, &hash, Role::Operator).map_err(sql)?;
             println!("operator {id} added");
             Ok(())
         }
         ["operator", "passwd", email] => found(db.set_password(email, &auth::hash_password(&read_password()?)).map_err(sql)?),
         ["operator", "disable", email] => found(db.set_user_disabled(email, true).map_err(sql)?),
         ["operator", "enable", email] => found(db.set_user_disabled(email, false).map_err(sql)?),
+        ["operator", "role", email, role] => {
+            let role = Role::parse(role).ok_or_else(|| format!("bad role: {role} (admin or operator)"))?;
+            found(db.set_role(email, role).map_err(sql)?)
+        }
+        ["operator", "fleets", email, "all"] => found(db.set_user_fleets(email, true, &[]).map_err(sql)?),
+        ["operator", "fleets", email, list] => {
+            let fleets = list.split(',').filter(|f| !f.is_empty()).map(fleet).collect::<Result<Vec<_>, _>>()?;
+            found(db.set_user_fleets(email, false, &fleets).map_err(sql)?)
+        }
         ["operator", "list"] => {
             for (u, disabled) in db.users().map_err(sql)? {
-                println!("{}\t{}\t{}\t{}{}", u.id, u.email, u.name, u.role, if disabled { "\tdisabled" } else { "" });
+                let fleets = match (u.role, u.all_fleets) {
+                    (Role::Operator, _) => "-".to_owned(),
+                    (Role::Admin, true) => "all".to_owned(),
+                    (Role::Admin, false) => u.fleets.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","),
+                };
+                let disabled = if disabled { "\tdisabled" } else { "" };
+                println!("{}\t{}\t{}\t{}\t{fleets}{disabled}", u.id, u.email, u.name, u.role.as_str());
             }
             Ok(())
         }
-        ["robot", "add", name] => {
+        ["robot", "add", name, rest @ ..] if rest.len() <= 1 => {
+            let fleet = rest.first().map(|f| fleet(f)).transpose()?.unwrap_or(1);
             let secret = auth::new_token();
-            let id = db.add_robot(name, &auth::token_hash(&secret)).map_err(sql)?;
+            let id = db.add_robot(name, &auth::token_hash(&secret), fleet).map_err(sql)?;
             println!("robot {id} added; token (shown once, enter it in the robot app):");
             println!("{}", auth::robot_token(id, &secret));
             restart_hint();
@@ -277,9 +309,26 @@ fn manage(cfg: &Config, args: &[&str]) -> Result<(), String> {
             Ok(())
         }
         ["robot", "enable", robot] => found(db.set_robot_disabled(id(robot)?, false).map_err(sql)?),
+        ["robot", "fleet", robot, to] => {
+            let to = fleet(to)?;
+            found(db.set_robot_fleet(id(robot)?, to).map_err(sql)?)?;
+            restart_hint();
+            Ok(())
+        }
         ["robot", "list"] => {
-            for (id, name, disabled) in db.robots().map_err(sql)? {
-                println!("{id}\t{name}{}", if disabled { "\tdisabled" } else { "" });
+            for r in db.robots().map_err(sql)? {
+                println!("{}\t{}\t{}{}", r.id, r.name, r.fleet, if r.disabled { "\tdisabled" } else { "" });
+            }
+            Ok(())
+        }
+        ["fleet", "add", name] => {
+            let id = db.add_fleet(name).map_err(sql)?;
+            println!("fleet {id} added");
+            Ok(())
+        }
+        ["fleet", "list"] => {
+            for f in db.fleets().map_err(sql)? {
+                println!("{}\t{}", f.id, f.name);
             }
             Ok(())
         }
@@ -288,9 +337,10 @@ fn manage(cfg: &Config, args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// The running service learns about new robots when they connect; removals need a restart.
+/// The running service learns about CLI changes when the robot connects again; the console's admin pages
+/// apply them at once.
 fn restart_hint() {
-    eprintln!("note: a connected robot keeps its connection until `systemctl restart aerolink`");
+    eprintln!("note: a connected robot keeps its connection until it reconnects or `systemctl restart aerolink`");
 }
 
 /// One line from stdin; on a terminal the echo is switched off with `stty`.
@@ -312,8 +362,8 @@ fn read_password() -> Result<String, String> {
     }
     read.map_err(|e| e.to_string())?;
     let password = line.trim_end_matches(['\r', '\n']).to_owned();
-    if password.chars().count() < MIN_PASSWORD {
-        return Err(format!("password must be at least {MIN_PASSWORD} characters"));
+    if password.chars().count() < auth::MIN_PASSWORD {
+        return Err(format!("password must be at least {} characters", auth::MIN_PASSWORD));
     }
     Ok(password)
 }

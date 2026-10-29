@@ -27,6 +27,7 @@ import com.aerolink.robot.BuildConfig
 import com.aerolink.robot.MainActivity
 import com.aerolink.robot.R
 import com.aerolink.robot.link.AccessoryTransport
+import com.aerolink.robot.link.Faults
 import com.aerolink.robot.link.LinkPhase
 import com.aerolink.robot.link.LinkTransport
 import com.aerolink.robot.link.RobotLink
@@ -35,11 +36,14 @@ import com.aerolink.robot.power.ChargeControl
 import com.aerolink.robot.power.ChargeController
 import com.aerolink.robot.rtc.VideoSettings
 import com.aerolink.robot.rtc.WebRtcPeerFactory
+import com.aerolink.robot.signal.EventLevel
+import com.aerolink.robot.signal.RobotEvent
 import com.aerolink.robot.signal.RobotMode
 import com.aerolink.robot.signal.SignalIn
 import com.aerolink.robot.signal.RobotStatus
 import com.aerolink.robot.signal.SignalOut
 import com.aerolink.robot.signal.SignalPhase
+import com.aerolink.robot.signal.batteryStep
 import com.aerolink.robot.signal.SignalingClient
 import com.aerolink.robot.teleop.Teleop
 import com.aerolink.robot.update.FirmwareUpdater
@@ -67,7 +71,9 @@ import kotlinx.coroutines.runBlocking
  * - the signaling WebSocket to the server whenever the robot is provisioned ([RobotSettings]);
  * - operator sessions ([Teleop]): camera, microphone and a partial wake lock exist only during one (PWR-012/013);
  * - the phone charge window;
- * - app updates announced by the server ([Updater], ROB-008), installed only between sessions.
+ * - app updates announced by the server ([Updater], ROB-008), installed only between sessions;
+ * - what the admins see (docs/08-backend.md "Fleet administration"): the extended status, the position
+ *   ([LocationReporter]) and events ([EventQueue], including crashes of the previous run).
  * Started by [MainActivity], on boot and after an update ([BootReceiver]) and on accessory attach.
  */
 class RobotLinkService : Service() {
@@ -78,6 +84,10 @@ class RobotLinkService : Service() {
     private lateinit var updater: Updater
     private lateinit var firmwareUpdater: FirmwareUpdater
     private lateinit var wakeLock: PowerManager.WakeLock
+    private lateinit var events: EventQueue
+    private lateinit var network: NetworkMonitor
+    private lateinit var location: LocationReporter
+    private val started = System.currentTimeMillis() / 1000
     private var config = RobotConfig()
 
     private val link = MutableStateFlow<RobotLink?>(null)
@@ -107,8 +117,13 @@ class RobotLinkService : Service() {
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AeroLink:session")
             .apply { setReferenceCounted(false) }
+        CrashRecorder.install(this) { RobotSettings.load(this).online }
         DeviceOwner.apply(this) // PWR-014: permissions before the first session needs them
         startInForeground(session = false)
+        events = EventQueue(EventQueue.prefsStore(this))
+        CrashRecorder.take(this)?.let(::report)
+        network = NetworkMonitor(this).also { it.start() }
+        location = LocationReporter(this) { fix -> online() && signaling?.send(SignalOut.location(fix)) == true }
         ContextCompat.registerReceiver(
             this, detachReceiver, IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -130,12 +145,17 @@ class RobotLinkService : Service() {
         )
         scope.launch { teleop.status.collect { RobotHub.teleop.value = it } }
         scope.launch {
-            teleop.status.map { it.active }.distinctUntilChanged().collect(::sessionResources)
+            teleop.status.map { it.active }.distinctUntilChanged().collect {
+                sessionResources(it)
+                location.session(it)
+            }
         }
-        updater = Updater(this, scope, idle = teleop.status.map { !it.active }, config = { config })
+        updater = Updater(this, scope, idle = teleop.status.map { !it.active }, config = { config }, report = ::report)
         scope.launch { updater.status.collect { RobotHub.update.value = it } }
-        firmwareUpdater = FirmwareUpdater(this, scope, link, idle = teleop.status.map { !it.active }).also { it.start() }
+        firmwareUpdater = FirmwareUpdater(this, scope, link, idle = teleop.status.map { !it.active }, report = ::report)
+            .also { it.start() }
         scope.launch { firmwareUpdater.status.collect { RobotHub.firmware.value = it } }
+        watchForEvents()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -166,6 +186,8 @@ class RobotLinkService : Service() {
         teleop.close() // the peer is released outside this scope
         updater.close()
         signaling?.stop()
+        network.stop()
+        location.stop()
         // Runs before the scope dies: DISARM the robot and give charging back (PWR-023).
         runBlocking { link.value?.close() }
         charge.release()
@@ -202,8 +224,54 @@ class RobotLinkService : Service() {
             launch { client.state.collect { RobotHub.signal.value = it } }
             // SIG-004: the status goes out on change only, and again after every (re)connect.
             val online = client.state.map { it.phase == SignalPhase.ONLINE }.distinctUntilChanged()
+            launch {
+                // ADM-002/003: what was kept while offline.
+                online.collect { up ->
+                    if (up) {
+                        events.flush(client::send)
+                        location.flush()
+                    }
+                }
+            }
             combine(robotStatus(), online) { status, up -> status.takeIf { up } }
                 .collect { status -> status?.let { client.send(SignalOut.status(it)) } }
+        }
+    }
+
+    private fun online() = signaling?.state?.value?.phase == SignalPhase.ONLINE
+
+    /** ADM-003: queued, and sent at once when online. */
+    private fun report(event: RobotEvent) {
+        Log.i(TAG, "event ${event.level.wire} ${event.code}: ${event.message}")
+        events.add(event)
+        val client = signaling
+        if (client != null && online()) events.flush(client::send)
+    }
+
+    private fun report(level: EventLevel, code: String, message: String) =
+        report(RobotEvent(level, code, message, System.currentTimeMillis() / 1000))
+
+    /** ADM-003: robot base faults (SAFE-006), a base that does not answer, a low phone battery. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun watchForEvents() {
+        val linkStatus = link.flatMapLatest { it?.status ?: flowOf(null) }
+        scope.launch {
+            linkStatus.map { it?.faults ?: 0 }.distinctUntilChanged().collect { faults ->
+                if (faults != 0) report(EventLevel.ERROR, "base_fault", faultNames(faults))
+            }
+        }
+        scope.launch {
+            linkStatus.map { it?.phase }.distinctUntilChanged().collect { phase ->
+                when (phase) {
+                    LinkPhase.NO_RESPONSE -> report(EventLevel.ERROR, "base_no_response", "the robot base does not answer HELLO")
+                    LinkPhase.INCOMPATIBLE -> report(EventLevel.WARNING, "base_incompatible", "protocol version differs")
+                    else -> Unit
+                }
+            }
+        }
+        scope.launch {
+            charge.status.map { it.levelPercent?.let { level -> level <= LOW_PHONE_BATTERY } }.distinctUntilChanged()
+                .collect { low -> if (low == true) report(EventLevel.WARNING, "phone_battery_low", "≤ $LOW_PHONE_BATTERY %") }
         }
     }
 
@@ -215,10 +283,12 @@ class RobotLinkService : Service() {
             .distinctUntilChanged(),
         charge.status,
         teleop.status.map { it.active }.distinctUntilChanged(),
-    ) { (firmware, batteryMv), charge, active ->
+        network.info,
+        combine(updater.status, firmwareUpdater.status) { app, fw -> app.wire to fw.wire },
+    ) { (firmware, batteryMv), charge, active, net, (appUpdate, firmwareUpdate) ->
         RobotStatus(
             mode = if (active) RobotMode.TELEOP else RobotMode.IDLE,
-            phoneBattery = charge.levelPercent,
+            phoneBattery = batteryStep(charge.levelPercent, active),
             robotBatteryMv = batteryMv,
             chargeControl = when (charge.control) {
                 ChargeControl.PROBING -> null
@@ -227,6 +297,13 @@ class RobotLinkService : Service() {
             },
             app = BuildConfig.VERSION_NAME,
             firmware = firmware,
+            phone = Build.MODEL,
+            android = Build.VERSION.RELEASE,
+            network = net,
+            appUpdate = appUpdate,
+            firmwareUpdate = firmwareUpdate,
+            deviceOwner = DeviceOwner.isOwner(this),
+            started = started,
         )
     }.distinctUntilChanged()
 
@@ -303,6 +380,8 @@ class RobotLinkService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         if (session && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            // ADM-002: the GPS during a session; Android 14 refuses the type without the permission.
+            if (::location.isInitialized && location.permitted) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         try {
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
@@ -323,6 +402,18 @@ class RobotLinkService : Service() {
         private const val ACTION_PERMISSION = "com.aerolink.robot.USB_PERMISSION"
         /** A wake lock is never left behind, even if a session's end is missed. */
         private const val MAX_SESSION_MS = 4 * 60 * 60 * 1000L
+        private const val LOW_PHONE_BATTERY = 15
+
+        private val FAULT_NAMES = listOf(
+            Faults.MOTOR_LINK_LOST to "motor_link_lost",
+            Faults.MOTOR_FAULT to "motor_fault",
+            Faults.LOW_BATTERY to "low_battery",
+            Faults.OVERTEMP to "overtemp",
+        )
+
+        fun faultNames(faults: Int): String =
+            FAULT_NAMES.filter { (bit, _) -> faults and bit != 0 }.joinToString(", ") { it.second }
+                .ifEmpty { "0x%x".format(faults) }
 
         // Must match rp2040/src/usb_aoa.c and res/xml/accessory_filter.xml (LINK-002/003).
         private const val MANUFACTURER = "AeroLink"

@@ -23,10 +23,11 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 
+use crate::admin;
 use crate::auth;
 use crate::config::Config;
 use crate::db::{self, Db, User};
-use crate::hub::{ConnId, Hub, IceServer, OperatorMsg, Out, Peer, RobotId, RobotMsg, ServerMsg, SessionId, Target, UserId};
+use crate::hub::{ConnId, Hub, IceServer, OperatorMsg, Out, Peer, RobotId, RobotMsg, RobotRecord, ServerMsg, SessionId, Target, UserId};
 use crate::release::{self, Release};
 
 /// SDPs are a few KiB; anything near this is abuse.
@@ -52,32 +53,45 @@ struct Conn {
     who: Who,
 }
 
-struct Signaling {
-    hub: Hub,
+pub(crate) struct Signaling {
+    pub(crate) hub: Hub,
     conns: HashMap<ConnId, Conn>,
 }
 
+impl Signaling {
+    /// Closes connections (their tasks see the queue end and say goodbye).
+    pub(crate) fn drop_conns(&mut self, ids: impl IntoIterator<Item = ConnId>) {
+        for id in ids {
+            self.conns.remove(&id);
+        }
+    }
+}
+
+/// Robot events with this target go to Telegram only: they are stored with the robot already (ADM-003), and
+/// the server's error log stays about the server.
+pub const ROBOT_EVENT_TARGET: &str = "aerolink::robot_event";
+
 pub struct App {
-    cfg: Config,
+    pub(crate) cfg: Config,
     db: Mutex<Db>,
-    signaling: Mutex<Signaling>,
+    pub(crate) signaling: Mutex<Signaling>,
     next_conn: AtomicU64,
     /// Robot app release announced to robots (ROB-008).
     release: Mutex<Option<Release>>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // A panic elsewhere must not take the whole service down with poisoned locks.
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl App {
     pub fn new(cfg: Config, db: Db) -> rusqlite::Result<Arc<Self>> {
-        let known = db.robots()?.into_iter().filter(|(_, _, disabled)| !disabled).map(|(id, name, _)| (id, name));
+        let hub = Hub::new(db.fleets()?, db.robots()?);
         let release = load_release(&cfg);
         Ok(Arc::new(App {
             cfg,
-            signaling: Mutex::new(Signaling { hub: Hub::new(known), conns: HashMap::new() }),
+            signaling: Mutex::new(Signaling { hub, conns: HashMap::new() }),
             db: Mutex::new(db),
             next_conn: AtomicU64::new(1),
             release: Mutex::new(release),
@@ -114,7 +128,7 @@ impl App {
         self.dispatch(&mut sig, out);
     }
 
-    fn db(&self) -> MutexGuard<'_, Db> {
+    pub(crate) fn db(&self) -> MutexGuard<'_, Db> {
         lock(&self.db)
     }
 
@@ -135,7 +149,7 @@ impl App {
     }
 
     /// Delivers hub output. A full queue means a stuck client: dropping its sender closes it.
-    fn dispatch(&self, sig: &mut Signaling, out: Out) {
+    pub(crate) fn dispatch(&self, sig: &mut Signaling, out: Out) {
         for (target, mut msg) in out {
             match target {
                 Target::Conn(id) => {
@@ -154,8 +168,48 @@ impl App {
                         send(sig, id, text.clone());
                     }
                 }
+                Target::Admins(fleet) => {
+                    let text = encode(&msg);
+                    let ids: Vec<ConnId> = sig.hub.admins_of(fleet).collect();
+                    for id in ids {
+                        send(sig, id, text.clone());
+                    }
+                }
             }
         }
+    }
+}
+
+impl App {
+    /// A robot message: what has to survive a restart is stored first (ADM-004), then the hub announces it.
+    fn robot_message(&self, conn: ConnId, robot: RobotId, msg: RobotMsg) {
+        let now = db::now();
+        let stored = match &msg {
+            RobotMsg::Status(status) => self.db().save_status(robot, status, now).map(|_| None),
+            RobotMsg::Location(location) if location.valid() => self.db().save_location(robot, location, now).map(|_| None),
+            RobotMsg::Event(event) => self.db().add_event(robot, &event.clone().sanitized(), now).map(Some),
+            _ => Ok(None),
+        };
+        let event = match stored {
+            Ok(event) => event,
+            Err(e) => {
+                tracing::error!("database: {e}");
+                None
+            }
+        };
+        let mut sig = lock(&self.signaling);
+        // A replaced connection may still deliver a message or two; they are not this robot's any more.
+        if sig.hub.robot_of(conn) != Some(robot) {
+            return;
+        }
+        let mut out = sig.hub.from_robot(conn, msg);
+        if let Some(event) = event {
+            if event.level == crate::hub::EventLevel::Error {
+                tracing::error!(target: ROBOT_EVENT_TARGET, robot, code = %event.code, "{}", event.message);
+            }
+            out.extend(sig.hub.robot_event(robot, event));
+        }
+        self.dispatch(&mut sig, out);
     }
 }
 
@@ -192,6 +246,13 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/v1/logout", post(logout))
         .route("/api/v1/me", get(me))
         .route("/api/v1/robot/apk/{abi}", get(robot_apk))
+        .route("/api/v1/admin/robots", post(admin::add_robot))
+        .route("/api/v1/admin/robots/{id}", post(admin::robot_action))
+        .route("/api/v1/admin/robots/{id}/events", get(admin::robot_events))
+        .route("/api/v1/admin/users", get(admin::users).post(admin::add_user))
+        .route("/api/v1/admin/users/{id}", post(admin::user_action))
+        .route("/api/v1/admin/fleets", post(admin::add_fleet))
+        .route("/api/v1/admin/audit", get(admin::audit))
         .route("/ws/operator", get(operator_ws))
         .route("/ws/robot", get(robot_ws))
         .fallback(|| async { ApiError::NotFound })
@@ -201,16 +262,23 @@ pub fn router(app: Arc<App>) -> Router {
 
 // --- errors ---
 
-enum ApiError {
+pub(crate) enum ApiError {
     BadRequest,
     Unauthorized,
     Forbidden,
     NotFound,
+    /// A name or e-mail that is taken.
+    Conflict,
     Internal,
 }
 
 impl From<rusqlite::Error> for ApiError {
     fn from(e: rusqlite::Error) -> Self {
+        if let rusqlite::Error::SqliteFailure(f, _) = &e {
+            if f.code == rusqlite::ErrorCode::ConstraintViolation {
+                return ApiError::Conflict;
+            }
+        }
         tracing::error!("database: {e}");
         ApiError::Internal
     }
@@ -223,6 +291,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            ApiError::Conflict => (StatusCode::CONFLICT, "conflict"),
             ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
         (status, Json(json!({ "error": code }))).into_response()
@@ -230,15 +299,15 @@ impl IntoResponse for ApiError {
 }
 
 /// Client address as seen by nginx (the socket peer is nginx itself).
-fn client_ip(headers: &HeaderMap) -> &str {
+pub(crate) fn client_ip(headers: &HeaderMap) -> &str {
     headers.get("x-real-ip").and_then(|v| v.to_str().ok()).unwrap_or("-")
 }
 
-fn user_json(u: &User) -> serde_json::Value {
-    json!({ "id": u.id, "email": u.email, "name": u.name, "role": u.role })
+pub(crate) fn user_json(u: &User) -> serde_json::Value {
+    json!({ "id": u.id, "email": u.email, "name": u.name, "role": u.role, "all_fleets": u.all_fleets, "fleets": u.fleets })
 }
 
-fn session_user(app: &App, headers: &HeaderMap) -> Result<User, ApiError> {
+pub(crate) fn session_user(app: &App, headers: &HeaderMap) -> Result<User, ApiError> {
     let token = headers
         .get_all(header::COOKIE)
         .iter()
@@ -316,9 +385,12 @@ async fn operator_ws(State(app): State<Arc<App>>, headers: HeaderMap, ws: WebSoc
     }
     let user = session_user(&app, &headers)?;
     Ok(ws.max_message_size(MAX_WS_MESSAGE).max_frame_size(MAX_WS_MESSAGE).on_upgrade(move |socket| async move {
+        let admin = user.admin_access();
         let peer = Peer { id: user.id, name: user.name };
-        run_conn(app, socket, Who::Operator(peer.id), OPERATOR_IDLE, |hub, conn| (hub.operator_connected(conn, peer), None))
-            .await
+        run_conn(app, socket, Who::Operator(peer.id), OPERATOR_IDLE, |hub, conn| {
+            (hub.operator_connected(conn, peer, admin), None)
+        })
+        .await
     }))
 }
 
@@ -329,16 +401,17 @@ struct RobotQuery {
 }
 
 /// The robot of the `Authorization: Bearer <id>.<secret>` header.
-fn robot_auth(app: &App, headers: &HeaderMap, what: &str) -> Result<(RobotId, String), ApiError> {
+fn robot_auth(app: &App, headers: &HeaderMap, what: &str) -> Result<RobotRecord, ApiError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .and_then(auth::parse_robot_token);
     let robot = match token {
-        Some((id, secret)) => app.db().robot_for_login(id)?.and_then(|(name, hash)| {
-            auth::constant_time_eq(&auth::token_hash(secret), &hash).then_some((id, name))
-        }),
+        Some((id, secret)) => app
+            .db()
+            .robot_for_login(id)?
+            .and_then(|(record, hash)| auth::constant_time_eq(&auth::token_hash(secret), &hash).then_some(record)),
         None => None,
     };
     robot.ok_or_else(|| {
@@ -353,13 +426,15 @@ async fn robot_ws(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let (id, name) = robot_auth(&app, &headers, "robot ws")?;
+    let record = robot_auth(&app, &headers, "robot ws")?;
+    let id = record.id;
     let resume = query.session;
+    app.db().touch_robot(id, db::now())?;
     tracing::info!(ip = client_ip(&headers), robot = id, resume, "robot connected");
     let update = lock(&app.release).clone();
     Ok(ws.max_message_size(MAX_WS_MESSAGE).max_frame_size(MAX_WS_MESSAGE).on_upgrade(move |socket| {
         run_conn(app, socket, Who::Robot(id), ROBOT_IDLE, move |hub, conn| {
-            let (mut out, replaced) = hub.robot_connected(conn, id, name, resume);
+            let (mut out, replaced) = hub.robot_connected(conn, record, resume);
             out.extend(update.map(|r| (Target::Conn(conn), ServerMsg::Update(r))));
             (out, replaced)
         })
@@ -369,7 +444,7 @@ async fn robot_ws(
 /// `GET /api/v1/robot/apk/<abi>`: the APK of the current release (ROB-008), robots only. Behind nginx the file
 /// is sent by nginx (`X-Accel-Redirect` to an `internal` location), so this thread never streams megabytes.
 async fn robot_apk(State(app): State<Arc<App>>, Path(abi): Path<String>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let (robot, _) = robot_auth(&app, &headers, "robot apk")?;
+    let robot = robot_auth(&app, &headers, "robot apk")?.id;
     let file = lock(&app.release).as_ref().and_then(|r| r.apks.get(&abi)).map(|apk| apk.file.clone());
     let Some(file) = file else { return Err(ApiError::NotFound) };
     tracing::info!(ip = client_ip(&headers), robot, abi, "app download");
@@ -424,14 +499,16 @@ async fn run_conn(
                     break "rate limit";
                 }
                 tokens -= 1.0;
-                let mut sig = lock(&app.signaling);
-                let out = match who {
-                    Who::Robot(_) => serde_json::from_str::<RobotMsg>(&text).map(|m| sig.hub.from_robot(id, m)),
-                    Who::Operator(_) => serde_json::from_str::<OperatorMsg>(&text).map(|m| sig.hub.from_operator(id, m)),
+                let handled = match who {
+                    Who::Robot(robot) => serde_json::from_str::<RobotMsg>(&text).map(|m| app.robot_message(id, robot, m)),
+                    Who::Operator(_) => serde_json::from_str::<OperatorMsg>(&text).map(|m| {
+                        let mut sig = lock(&app.signaling);
+                        let out = sig.hub.from_operator(id, m);
+                        app.dispatch(&mut sig, out);
+                    }),
                 };
-                match out {
-                    Ok(out) => app.dispatch(&mut sig, out),
-                    Err(_) => break "malformed message",
+                if handled.is_err() {
+                    break "malformed message";
                 }
             }
             outgoing = rx.recv() => match outgoing {
@@ -445,12 +522,23 @@ async fn run_conn(
         let close = CloseFrame { code: close_code::POLICY, reason: reason.into() };
         let _ = socket.send(Message::Close(Some(close))).await;
     }
+    let now = db::now();
     let mut sig = lock(&app.signaling);
     sig.conns.remove(&id);
-    let out = sig.hub.disconnected(id);
+    let current = sig.hub.robot_of(id).is_some();
+    let out = sig.hub.disconnected(id, now);
     app.dispatch(&mut sig, out);
+    drop(sig);
     match who {
-        Who::Robot(robot) => tracing::info!(robot, reason, "robot disconnected"),
+        Who::Robot(robot) => {
+            // A replaced connection is not the robot going offline.
+            if current {
+                if let Err(e) = app.db().touch_robot(robot, now) {
+                    tracing::error!("database: {e}");
+                }
+            }
+            tracing::info!(robot, reason, "robot disconnected")
+        }
         Who::Operator(user) => tracing::debug!(user, reason, "operator disconnected"),
     }
 }
@@ -532,9 +620,15 @@ mod tests {
 
     async fn start_app(tweak: impl FnOnce(&mut Config)) -> (String, String, Arc<App>) {
         let db = Db::memory().unwrap();
-        db.add_user("op@x.org", "Op", &auth::hash_password("password123")).unwrap();
+        let hash = auth::hash_password("password123");
+        db.add_user("op@x.org", "Op", &hash, db::Role::Operator).unwrap();
+        db.add_user("admin@x.org", "Admin", &hash, db::Role::Admin).unwrap();
+        db.set_user_fleets("admin@x.org", true, &[]).unwrap();
+        let north = db.add_fleet("north").unwrap();
+        db.add_user("north@x.org", "North", &hash, db::Role::Admin).unwrap();
+        db.set_user_fleets("north@x.org", false, &[north]).unwrap();
         let secret = auth::new_token();
-        let robot = db.add_robot("r1", &auth::token_hash(&secret)).unwrap();
+        let robot = db.add_robot("r1", &auth::token_hash(&secret), 1).unwrap();
         let mut cfg = Config::from_lookup(|_| None);
         cfg.origin = ORIGIN.into();
         cfg.secure_cookies = false;
@@ -552,12 +646,35 @@ mod tests {
     }
 
     async fn login(addr: &str, password: &str) -> reqwest::Response {
+        login_as(addr, "OP@x.org", password).await
+    }
+
+    async fn login_as(addr: &str, email: &str, password: &str) -> reqwest::Response {
         reqwest::Client::new()
             .post(format!("http://{addr}/api/v1/login"))
-            .json(&json!({ "email": "OP@x.org", "password": password }))
+            .json(&json!({ "email": email, "password": password }))
             .send()
             .await
             .unwrap()
+    }
+
+    async fn cookie_of(addr: &str, email: &str) -> String {
+        let r = login_as(addr, email, "password123").await;
+        r.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned()
+    }
+
+    /// `(status, body)` of an admin API call with the given cookie.
+    async fn api(addr: &str, cookie: &str, method: &str, path: &str, body: Option<serde_json::Value>) -> (u16, serde_json::Value) {
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}{path}");
+        let mut req = if method == "GET" { client.get(url) } else { client.post(url) };
+        req = req.header("cookie", cookie);
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        let r = req.send().await.unwrap();
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(serde_json::Value::Null))
     }
 
     async fn connect(addr: &str, path: &str, headers: &[(&'static str, &str)]) -> Result<Ws, tungstenite::Error> {
@@ -736,5 +853,112 @@ mod tests {
         let (addr, _) = start().await;
         let v: serde_json::Value = reqwest::get(format!("http://{addr}/api/v1/health")).await.unwrap().json().await.unwrap();
         assert_eq!(v["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn fleet_administration() {
+        let (addr, robot_token, _) = start_app(|_| {}).await;
+        let op = cookie_of(&addr, "op@x.org").await;
+        let admin = cookie_of(&addr, "admin@x.org").await;
+        let north = cookie_of(&addr, "north@x.org").await;
+        let me = api(&addr, &admin, "GET", "/api/v1/me", None).await.1;
+        assert_eq!((me["role"].as_str(), me["all_fleets"].as_bool()), (Some("admin"), Some(true)));
+
+        // The admin gets the fleet view after the usual robot list; an operator does not.
+        let mut op_ws = connect(&addr, "/ws/operator", &[("origin", ORIGIN), ("cookie", &op)]).await.unwrap();
+        assert_eq!(recv(&mut op_ws).await["type"], "welcome");
+        assert_eq!(recv(&mut op_ws).await["type"], "robots");
+        let mut admin_ws = connect(&addr, "/ws/operator", &[("origin", ORIGIN), ("cookie", &admin)]).await.unwrap();
+        assert_eq!(recv(&mut admin_ws).await["type"], "welcome");
+        assert_eq!(recv(&mut admin_ws).await["type"], "robots");
+        let fleet = recv(&mut admin_ws).await;
+        assert_eq!((fleet["type"].as_str(), fleet["fleets"].as_array().unwrap().len()), (Some("fleet"), 2));
+        assert_eq!(fleet["robots"][0]["name"], "r1");
+
+        // The robot's state, location and events reach the admin; the state survives in the database.
+        let bearer = format!("Bearer {robot_token}");
+        let mut robot = connect(&addr, "/ws/robot", &[("authorization", &bearer)]).await.unwrap();
+        assert_eq!(recv(&mut robot).await["type"], "welcome");
+        assert_eq!(recv(&mut op_ws).await["robot"]["online"], true);
+        assert_eq!(recv_of(&mut admin_ws, "fleet_robot").await["robot"]["online"], true);
+        send(&mut robot, json!({ "type": "location", "lat": 50.45, "lon": 30.52, "accuracy_m": 9, "at": 100 })).await;
+        assert_eq!(recv_of(&mut admin_ws, "fleet_robot").await["robot"]["location"]["lat"], 50.45);
+        send(&mut robot, json!({ "type": "event", "level": "error", "code": "base_fault", "message": "motor", "at": 101 })).await;
+        assert_eq!(recv_of(&mut admin_ws, "fleet_robot").await["robot"]["unread_errors"], 1);
+        assert_eq!(recv_of(&mut admin_ws, "robot_event").await["event"]["code"], "base_fault");
+        let (status, events) = api(&addr, &admin, "GET", "/api/v1/admin/robots/1/events", None).await;
+        assert_eq!((status, events["events"][0]["message"].as_str()), (200, Some("motor")));
+
+        // Operators cannot use admin messages or the admin API; an admin of another fleet sees nothing of r1.
+        send(&mut op_ws, json!({ "type": "take", "robot": 1 })).await;
+        let session = recv(&mut robot).await["session"].clone();
+        recv_of(&mut op_ws, "session").await;
+        send(&mut op_ws, json!({ "type": "admin_end", "session": session })).await;
+        assert_eq!(recv(&mut op_ws).await["code"], "forbidden");
+        assert_eq!(api(&addr, &op, "GET", "/api/v1/admin/users", None).await.0, 403);
+        assert_eq!(api(&addr, &op, "POST", "/api/v1/admin/robots/1", Some(json!({ "action": "disable" }))).await.0, 403);
+        assert_eq!(api(&addr, &north, "GET", "/api/v1/admin/robots/1/events", None).await.0, 404);
+        assert_eq!(api(&addr, &north, "POST", "/api/v1/admin/robots/1", Some(json!({ "action": "disable" }))).await.0, 404);
+        let user = json!({ "email": "x@x.org", "name": "X", "password": "long enough!", "role": "admin" });
+        assert_eq!(api(&addr, &north, "POST", "/api/v1/admin/users", Some(user)).await.0, 403);
+
+        // Take-over: the operator and the robot hear `end admin`, the robot then gets the admin's session.
+        while recv_of(&mut admin_ws, "fleet_robot").await["robot"]["operator"]["name"] != "Op" {}
+        send(&mut admin_ws, json!({ "type": "admin_take", "robot": 1 })).await;
+        let ended = recv(&mut robot).await;
+        assert_eq!((ended["type"].as_str(), ended["reason"].as_str()), (Some("end"), Some("admin")));
+        let taken = recv(&mut robot).await;
+        assert_eq!((taken["type"].as_str(), taken["peer"]["name"].as_str()), (Some("session"), Some("Admin")));
+        assert_eq!(recv_of(&mut op_ws, "end").await["reason"], "admin");
+
+        // The operators page knows who holds what.
+        let users = api(&addr, &admin, "GET", "/api/v1/admin/users", None).await.1;
+        let admin_row = users["users"].as_array().unwrap().iter().find(|u| u["name"] == "Admin").unwrap().clone();
+        assert_eq!((admin_row["online"].as_bool(), &admin_row["robots"]), (Some(true), &json!([1])));
+
+        // Disabling drops the robot at once; a new robot comes with a token shown once.
+        let (status, _) = api(&addr, &admin, "POST", "/api/v1/admin/robots/1", Some(json!({ "action": "disable" }))).await;
+        assert_eq!(status, 200);
+        assert!(tokio::time::timeout(Duration::from_secs(2), async { while robot.next().await.is_some_and(|m| m.is_ok_and(|m| !m.is_close())) {} }).await.is_ok());
+        assert_eq!(status_of(connect(&addr, "/ws/robot", &[("authorization", &bearer)]).await), 401);
+        let (status, added) = api(&addr, &admin, "POST", "/api/v1/admin/robots", Some(json!({ "name": "r2", "fleet": 2 }))).await;
+        assert_eq!(status, 200);
+        assert!(added["token"].as_str().unwrap().starts_with(&format!("{}.", added["id"])));
+        let (status, _) = api(&addr, &admin, "POST", "/api/v1/admin/robots", Some(json!({ "name": "r2", "fleet": 1 }))).await;
+        assert_eq!(status, 409);
+        let (status, events) = api(&addr, &north, "GET", &format!("/api/v1/admin/robots/{}/events", added["id"]), None).await;
+        assert_eq!((status, events["events"].as_array().map(Vec::len)), (200, Some(0)));
+
+        // Users: an admin cannot demote themselves; the audit shows what happened, per fleet.
+        let (status, _) = api(&addr, &admin, "POST", "/api/v1/admin/users/2", Some(json!({ "action": "role", "role": "operator" }))).await;
+        assert_eq!(status, 403);
+        let (status, user) = api(&addr, &admin, "POST", "/api/v1/admin/users", Some(json!({
+            "email": "new@x.org", "name": "New", "password": "long enough!", "role": "operator"
+        }))).await;
+        assert_eq!((status, user["role"].as_str()), (200, Some("operator")));
+        let short = json!({ "action": "password", "password": "short" });
+        assert_eq!(api(&addr, &admin, "POST", &format!("/api/v1/admin/users/{}", user["id"]), Some(short)).await.0, 400);
+        let audit = api(&addr, &admin, "GET", "/api/v1/admin/audit", None).await.1;
+        let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
+        assert_eq!(actions, ["user_add", "robot_add", "robot_disable"]);
+        let audit = api(&addr, &north, "GET", "/api/v1/admin/audit", None).await.1;
+        assert_eq!(audit["entries"].as_array().unwrap().len(), 1);
+    }
+
+    /// The next message of this type; others are skipped.
+    async fn recv_of(ws: &mut Ws, ty: &str) -> serde_json::Value {
+        loop {
+            let m = recv(ws).await;
+            if m["type"] == ty {
+                return m;
+            }
+        }
+    }
+
+    fn status_of(r: Result<Ws, tungstenite::Error>) -> u16 {
+        match r {
+            Ok(_) => panic!("not refused"),
+            Err(e) => status(e),
+        }
     }
 }

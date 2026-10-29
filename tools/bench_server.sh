@@ -71,8 +71,18 @@ $TURN_ENV
 CONF
 export AEROLINK_CONFIG="$STATE/env"
 
+# Until the first release the schema changes in place (docs/06-roadmap.md "Compatibility"): a database from an
+# older build cannot be read, so it is set aside and the bench starts over (with a new robot token).
+if [ -f "$STATE/aerolink.db" ] && ! "$BIN" robot list >/dev/null 2>&1; then
+    echo "⚠️  build/bench/aerolink.db is from an older schema: moved to aerolink.db.old, enter the new robot token in the app."
+    mv "$STATE/aerolink.db" "$STATE/aerolink.db.old"
+    rm -f "$STATE/aerolink.db-wal" "$STATE/aerolink.db-shm" "$STATE/robot-token"
+fi
 if ! "$BIN" operator list | grep -q "$OPERATOR"; then
     echo "$PASSWORD" | "$BIN" operator add "$OPERATOR" Bench >/dev/null
+    # The bench user is an admin of every fleet: the console's admin pages are part of the bench.
+    "$BIN" operator role "$OPERATOR" admin
+    "$BIN" operator fleets "$OPERATOR" all
 fi
 if [ ! -s "$STATE/robot-token" ]; then
     "$BIN" robot add bench 2>/dev/null | tail -1 > "$STATE/robot-token"

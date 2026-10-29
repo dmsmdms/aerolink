@@ -1,5 +1,5 @@
 # bash completion for aerolink (backend/src/main.rs; `aerolink completion bash` prints this file).
-# Robot ids and operator e-mails come from `aerolink robot|operator list`, which needs read access to the
+# Robot ids, operator e-mails and fleet names come from `aerolink robot|operator|fleet list`, which needs read access to the
 # database: they complete for root and the aerolink user, and silently not for anyone else.
 
 _aerolink() {
@@ -12,7 +12,7 @@ _aerolink() {
         cword=$COMP_CWORD
     fi
 
-    local commands="serve operator robot guard telegram-test completion version help"
+    local commands="serve operator robot fleet guard telegram-test completion version help"
     local cmd=${words[1]} sub=${words[2]}
 
     if ((cword == 1)); then
@@ -33,17 +33,26 @@ _aerolink() {
             ;;
         operator)
             if ((cword == 2)); then
-                COMPREPLY=($(compgen -W "add passwd disable enable list" -- "$cur"))
-            elif ((cword == 3)) && [[ $sub == @(passwd|disable|enable) ]]; then
+                COMPREPLY=($(compgen -W "add passwd disable enable role fleets list" -- "$cur"))
+            elif ((cword == 3)) && [[ $sub == @(passwd|disable|enable|role|fleets) ]]; then
                 COMPREPLY=($(compgen -W "$("${words[0]}" operator list 2> /dev/null | cut -f2)" -- "$cur"))
+            elif ((cword == 4)) && [[ $sub == role ]]; then
+                COMPREPLY=($(compgen -W "admin operator" -- "$cur"))
+            elif ((cword == 4)) && [[ $sub == fleets ]]; then
+                COMPREPLY=($(compgen -W "all $("${words[0]}" fleet list 2> /dev/null | cut -f2)" -- "$cur"))
             fi
             ;;
         robot)
             if ((cword == 2)); then
-                COMPREPLY=($(compgen -W "add token disable enable list" -- "$cur"))
-            elif ((cword == 3)) && [[ $sub == @(token|disable|enable) ]]; then
+                COMPREPLY=($(compgen -W "add token disable enable fleet list" -- "$cur"))
+            elif ((cword == 3)) && [[ $sub == @(token|disable|enable|fleet) ]]; then
                 COMPREPLY=($(compgen -W "$("${words[0]}" robot list 2> /dev/null | cut -f1)" -- "$cur"))
+            elif ((cword == 4)) && [[ $sub == @(fleet|add) ]]; then
+                COMPREPLY=($(compgen -W "$("${words[0]}" fleet list 2> /dev/null | cut -f2)" -- "$cur"))
             fi
+            ;;
+        fleet)
+            ((cword == 2)) && COMPREPLY=($(compgen -W "add list" -- "$cur"))
             ;;
         guard)
             if ((cword == 2)); then

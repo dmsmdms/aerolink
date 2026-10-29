@@ -3,7 +3,10 @@
 // apart from network trouble by asking /api/v1/me.
 
 import { HttpError, me } from './api';
-import type { OperatorMsg, Peer, RobotView, ServerMsg } from './types';
+import type { Fleet, OperatorMsg, Peer, RobotAdminView, RobotEvent, RobotView, ServerMsg } from './types';
+
+/** Live robot events kept for the robot pages (older ones come from the API). */
+const RECENT_EVENTS = 200;
 
 /** The backend drops consoles silent for 2 min. */
 const PING_MS = 30_000;
@@ -22,6 +25,10 @@ export class Signaling {
   state = $state<ConnState>('connecting');
   robots = $state<RobotView[]>([]);
   you = $state<Peer | null>(null);
+  /** Admins only (ADM-010): the fleets they may see and every robot in them. */
+  fleets = $state<Fleet[]>([]);
+  fleetRobots = $state<RobotAdminView[]>([]);
+  recentEvents = $state<{ robot: number; event: RobotEvent }[]>([]);
 
   private ws: WebSocket | null = null;
   private retries = 0;
@@ -87,13 +94,29 @@ export class Signaling {
       case 'robots':
         this.robots = m.robots;
         break;
-      case 'robot': {
-        const i = this.robots.findIndex((r) => r.id === m.robot.id);
-        if (i >= 0) this.robots[i] = m.robot;
-        else this.robots.push(m.robot);
+      case 'robot':
+        upsert(this.robots, m.robot);
         break;
-      }
+      case 'robot_gone':
+        this.robots = this.robots.filter((r) => r.id !== m.robot);
+        break;
+      case 'fleet':
+        this.fleets = m.fleets;
+        this.fleetRobots = m.robots;
+        break;
+      case 'fleet_robot':
+        upsert(this.fleetRobots, m.robot);
+        break;
+      case 'robot_event':
+        this.recentEvents = [{ robot: m.robot, event: m.event }, ...this.recentEvents].slice(0, RECENT_EVENTS);
+        break;
     }
     this.events.message(m);
   }
+}
+
+function upsert<T extends { id: number }>(list: T[], item: T): void {
+  const i = list.findIndex((x) => x.id === item.id);
+  if (i >= 0) list[i] = item;
+  else list.push(item);
 }

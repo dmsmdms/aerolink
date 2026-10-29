@@ -114,7 +114,15 @@ sealed class SignalIn {
 /** ARCH-002. */
 enum class RobotMode { IDLE, TELEOP, AUTO, NEEDS_HELP }
 
-/** `status` message; sent whole, and only when it changes (SIG-004, PWR-012). */
+enum class NetworkType(val wire: String) { WIFI("wifi"), CELLULAR("cellular"), OTHER("other") }
+
+/** ADM-001: the phone's network; [signal] 0..4, sampled when the network changes, not tracked. */
+data class NetworkInfo(val type: NetworkType, val operator: String? = null, val signal: Int? = null)
+
+/**
+ * `status` message; sent whole, and only when it changes (SIG-004, PWR-012). Every field is coarse for that
+ * reason: the battery in 5 % steps outside a session ([batteryStep]), the service start time instead of an uptime.
+ */
 data class RobotStatus(
     val mode: RobotMode = RobotMode.IDLE,
     val phoneBattery: Int? = null,
@@ -123,7 +131,40 @@ data class RobotStatus(
     val chargeControl: Boolean? = null,
     val app: String? = null,
     val firmware: String? = null,
+    val phone: String? = null,
+    val android: String? = null,
+    val network: NetworkInfo? = null,
+    /** ROB-008 state: `current`, `blocked`, `waiting`, `downloading`, `installing`, `failed`. */
+    val appUpdate: String? = null,
+    /** ROB-009 state: `current`, `no_image`, `waiting`, `sending`, `installing`, `failed`. */
+    val firmwareUpdate: String? = null,
+    val deviceOwner: Boolean? = null,
+    /** When the robot service started, Unix seconds. */
+    val started: Long? = null,
 )
+
+/** ADM-001: 1 % steps during a session (the operator watches it), 5 % otherwise (no chatter while idle). */
+fun batteryStep(percent: Int?, session: Boolean): Int? = if (session || percent == null) percent else percent / 5 * 5
+
+/** ADM-002: a position fix; [at] in Unix seconds. */
+data class Fix(val lat: Double, val lon: Double, val accuracyM: Float?, val at: Long)
+
+enum class EventLevel(val wire: String) { INFO("info"), WARNING("warning"), ERROR("error") }
+
+/** ADM-003: something an admin should know about; queued while offline. [at] in Unix seconds. */
+data class RobotEvent(val level: EventLevel, val code: String, val message: String, val at: Long) {
+    fun toJson(): JSONObject =
+        JSONObject().put("level", level.wire).put("code", code).put("message", message).put("at", at)
+
+    companion object {
+        fun parse(o: JSONObject) = RobotEvent(
+            level = EventLevel.entries.firstOrNull { it.wire == o.optString("level") } ?: EventLevel.INFO,
+            code = o.getString("code"),
+            message = o.optString("message"),
+            at = o.getLong("at"),
+        )
+    }
+}
 
 /** Robot → server. */
 object SignalOut {
@@ -134,7 +175,28 @@ object SignalOut {
         .putOpt("charge_control", s.chargeControl)
         .putOpt("app", s.app)
         .putOpt("firmware", s.firmware)
+        .putOpt("phone", s.phone)
+        .putOpt("android", s.android)
+        .putOpt("network", s.network?.let { n ->
+            JSONObject().put("type", n.type.wire).putOpt("operator", n.operator).putOpt("signal", n.signal)
+        })
+        .putOpt("app_update", s.appUpdate)
+        .putOpt("firmware_update", s.firmwareUpdate)
+        .putOpt("device_owner", s.deviceOwner)
+        .putOpt("started", s.started)
         .toString()
+
+    fun location(f: Fix): String = message("location")
+        .put("lat", f.lat)
+        .put("lon", f.lon)
+        .putOpt("accuracy_m", f.accuracyM?.toDouble())
+        .put("at", f.at)
+        .toString()
+
+    fun event(e: RobotEvent): String {
+        val o = e.toJson()
+        return message("event").also { m -> o.keys().forEach { m.put(it, o.get(it)) } }.toString()
+    }
 
     fun answer(session: Long, sdp: Sdp): String = message("answer").put("session", session).put("sdp", sdp.toJson()).toString()
 

@@ -105,6 +105,7 @@ const sigSend = (m) => sig.send(JSON.stringify(m));
 let session = null;
 let ended = false;
 let resumed = false;
+let endReason = null;
 /** `resume`: the session to keep across the reconnect (SIG-007), as the phone does after a network change. */
 async function connectRobot(resume) {
   const query = resume ? `?session=${resume}` : '';
@@ -117,7 +118,11 @@ async function connectRobot(resume) {
       resumed = session?.session === m.session;
       session = m;
     }
-    if (m.type === 'end') ended = m.reason === 'released';
+    if (m.type === 'end') {
+      ended = m.reason === 'released';
+      endReason = m.reason;
+      await robotPage.evaluate('window.pc?.close(); window.pc = null');
+    }
     if (m.type === 'offer') {
       const answer = await robotPage.evaluate(`robot.offer(${JSON.stringify(m.sdp)}, ${JSON.stringify(session.ice_servers)})`);
       sigSend({ type: 'answer', session: m.session, sdp: answer });
@@ -220,5 +225,41 @@ await op.evaluate(`[...document.querySelectorAll('.title button')].find(b => b).
 await op.until(`!document.querySelector('.panel')`, 'panel closed');
 await sleep(300);
 check(ended, 'robot heard the release');
+
+log('admin: fleet table, map, robot events; take the robot over from the operator');
+sigSend({ type: 'location', lat: 50.4501, lon: 30.5234, accuracy_m: 6, at: Math.floor(Date.now() / 1000) });
+sigSend({ type: 'event', level: 'error', code: 'base_fault', message: 'motor_fault', at: Math.floor(Date.now() / 1000) });
+await op.evaluate(`document.querySelector('li button').click()`);
+await op.until(`document.querySelector('video')?.readyState >= 2`, 'operator drives again', 15000);
+const admin = await page(`${BASE}/robots.txt`);
+await admin.send('Network.enable');
+await admin.send('Network.setBlockedURLs', { urls: ['*tile.openstreetmap.org*'] }); // no load on OSM from tests
+await admin.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+// One browser profile: logging in here replaces the operator's cookie, their open WebSocket stays as it is.
+await admin.evaluate(`fetch('/api/v1/login', { method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ email: 'admin@x.org', password: 'password1234' }) }).then((r) => r.status)`);
+await admin.evaluate(`location.href = '/console/'`);
+await admin.until(`[...document.querySelectorAll('nav button')].length === 4`, 'admin tabs');
+await admin.evaluate(`[...document.querySelectorAll('nav button')][1].click()`);
+await admin.until(`document.querySelector('table tbody tr')?.innerText.includes('r1')`, 'fleet table');
+const row = await admin.evaluate(`document.querySelector('table tbody tr').innerText`);
+check(row.includes('Op') && row.includes('1'), 'fleet table: r1 driven by Op, one unread error');
+check(await admin.evaluate(`document.querySelector('.marker')?.innerText === 'r1'`), 'map shows r1 at its position');
+await admin.evaluate(`document.querySelector('table tbody tr').click()`);
+await admin.until(`document.querySelector('.events')?.innerText.includes('base_fault')`, 'robot events');
+check(true, 'robot page lists the error event');
+const shotOf = async (p, name) => {
+  const r = await p.send('Page.captureScreenshot', { format: 'png' });
+  writeFileSync(`${outDir}/${name}.png`, Buffer.from(r.result.data, 'base64'));
+};
+await shotOf(admin, '5-fleet');
+await admin.evaluate(`window.confirm = () => true`);
+await admin.evaluate(`[...document.querySelectorAll('section .actions button')].find(b => b.innerText === 'Take over').click()`);
+await admin.until(`document.querySelector('video')?.readyState >= 2`, 'admin gets video', 15000);
+check(endReason === 'admin', 'robot heard end(admin) before the admin session');
+check(session.peer.name === 'Admin', 'new session belongs to the admin');
+await op.until(`document.body.innerText.includes('An administrator ended the session.')`, 'operator notice');
+check(!(await op.evaluate(`!!document.querySelector('.panel')`)), 'operator lost the robot');
+await shotOf(admin, '6-admin-drives');
 console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
 process.exit(failures ? 1 : 0);

@@ -13,6 +13,7 @@ use crate::hub::RobotId;
 pub const SESSION_COOKIE: &str = "__Host-aerolink";
 pub const SESSION_TTL_SECS: i64 = 30 * 24 * 3600;
 pub const TURN_TTL_SECS: i64 = 24 * 3600;
+pub const MIN_PASSWORD: usize = 10;
 
 /// Argon2id with the crate defaults (19 MiB, t=2, p=1, OWASP minimum): ~20–40 ms on one core. That
 /// briefly stalls the single runtime thread, which is why nginx rate-limits `/api/v1/login` hard.

@@ -163,5 +163,10 @@ update state left on the board.
 - `crc32`, `fwstore` (record, loader decisions) and `fwupdate` (receiver) are SDK-free and host-tested against a
   RAM "flash" that behaves like NOR (program only clears bits), with a power cut injected after every single
   flash operation of an install, a transfer and a rollback.
+- Hardware: `make hwtest-rp2040` (board in BOOTSEL) writes the loader, a boot record and slot contents with
+  picotool and reboots; the active image is `aerolink-probe` (`rp2040/hwtest/probe.c`), which goes straight back
+  to BOOTSEL, so after every boot the script reads the record and the active slot. Scenarios: install, trial and
+  rollback, a hanging image (watchdog), damaged images, an interrupted copy, a torn record, an empty slot, and
+  `SCENARIOS=cut` with the board unplugged by hand during the copies. `make flash` restores the firmware.
 - Android: `RobotLink.flashFirmware` / `confirmFirmware` / `reboot`, `FirmwareUpdater` (`ROB-009`); JVM tests
   against a fake base and `SimulatedBase`, which takes updates like the firmware (bench tests on the Pixel).

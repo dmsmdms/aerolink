@@ -7,6 +7,8 @@ import com.aerolink.robot.link.LinkPhase
 import com.aerolink.robot.link.Report
 import com.aerolink.robot.link.RobotLink
 import com.aerolink.robot.link.RobotState
+import com.aerolink.robot.signal.EventLevel
+import com.aerolink.robot.signal.RobotEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -40,6 +42,18 @@ sealed class FirmwareStatus {
     object Installing : FirmwareStatus()
 
     data class Failed(val error: String) : FirmwareStatus()
+
+    /** For the server's `status` (ADM-001); null without a robot base. */
+    val wire: String?
+        get() = when (this) {
+            NoBase -> null
+            NoImage -> "no_image"
+            Current -> "current"
+            Waiting -> "waiting"
+            is Sending -> "sending"
+            Installing -> "installing"
+            is Failed -> "failed"
+        }
 }
 
 /** The decision for a robot base that answered HELLO (pure, JVM-tested). */
@@ -70,6 +84,8 @@ class FirmwareUpdater(
     private val scope: CoroutineScope,
     private val links: StateFlow<RobotLink?>,
     private val idle: Flow<Boolean>,
+    /** ADM-003: failed transfers and rollbacks are reported to the admins. */
+    private val report: (RobotEvent) -> Unit = {},
 ) {
     private val _status = MutableStateFlow<FirmwareStatus>(FirmwareStatus.NoBase)
     val status: StateFlow<FirmwareStatus> = _status.asStateFlow()
@@ -100,6 +116,7 @@ class FirmwareUpdater(
             FirmwareBoot.ROLLED_BACK -> {
                 Log.w(TAG, "the new firmware did not start, the base went back to ${crcHex(running.firmwareCrc)}")
                 prefs.edit().putString(KEY_ERROR, "the new firmware did not start; rolled back").apply()
+                report(event(EventLevel.ERROR, "firmware_rolled_back", "back to ${crcHex(running.firmwareCrc)}"))
             }
         }
         if (running.boot != FirmwareBoot.NORMAL) {
@@ -143,6 +160,7 @@ class FirmwareUpdater(
             Log.w(TAG, "firmware update failed: $error")
             prefs.edit().putString(KEY_ERROR, error).apply()
             _status.value = FirmwareStatus.Failed(error)
+            report(event(EventLevel.ERROR, "firmware_update_failed", "attempt $attempt: $error"))
             return
         }
         _status.value = FirmwareStatus.Installing
@@ -162,5 +180,8 @@ class FirmwareUpdater(
         val GONE = setOf(LinkPhase.NO_RESPONSE, LinkPhase.CLOSED)
 
         fun crcHex(crc: Long?) = "%08x".format(crc ?: 0)
+
+        fun event(level: EventLevel, code: String, message: String) =
+            RobotEvent(level, code, message, System.currentTimeMillis() / 1000)
     }
 }

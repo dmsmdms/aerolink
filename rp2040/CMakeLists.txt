@@ -81,6 +81,15 @@ pico_add_linker_script_override_path(aerolink ${CMAKE_CURRENT_LIST_DIR}/ld/app
 # aerolink.bin is the image the phone installs (LINK-040..046; shipped in the APK).
 pico_add_extra_outputs(aerolink)
 
+# --- aerolink-probe: loader hardware tests only (tools/hwtest_rp2040.py), linked into the active slot ---
+add_executable(aerolink-probe hwtest/probe.c)
+target_link_libraries(aerolink-probe pico_stdlib)
+pico_enable_stdio_uart(aerolink-probe 0)
+pico_enable_stdio_usb(aerolink-probe 0)
+pico_add_linker_script_override_path(aerolink-probe ${CMAKE_CURRENT_LIST_DIR}/ld/app
+    FILES memory_flash.incl section_boot2.incl)
+pico_add_bin_output(aerolink-probe)
+
 # aerolink.uf2 for PC flashing: loader + erased boot record + application.
 add_custom_command(TARGET aerolink POST_BUILD
     COMMAND ${PYTHON3_BIN} ${CMAKE_CURRENT_LIST_DIR}/../tools/fw_image.py

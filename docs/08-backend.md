@@ -18,8 +18,9 @@ console ◄════════════ WebRTC: video, audio, DataChanne
 - `SRV-002` Listens on a Unix socket passed by systemd (socket activation, `aerolink.socket`): restarts never
   refuse connections, no TCP port is opened. `AEROLINK_LISTEN=unix:/path` or `host:port` for development.
 - `SRV-003` Storage: SQLite (WAL), queries run inline on the runtime thread. Schema steps are appended to
-  `db.rs` `MIGRATIONS`, tracked by `PRAGMA user_version` (until the first release the schema is edited in place, see [06](06-roadmap.md)). Tables: `users` (with `role`, `disabled`, ready for
-  registration), `robots` (token hash), `sessions` (login sessions).
+  `db.rs` `MIGRATIONS`, tracked by `PRAGMA user_version` (until the first release the schema is edited in place, see [06](06-roadmap.md)). Tables: `users` (`role`
+  `operator`/`admin`, `all_fleets`, `disabled`), `user_fleets`, `fleets`, `robots` (token hash, fleet, last known
+  status/location/`last_seen`, unread errors), `robot_events`, `audit`, `sessions` (login sessions).
 - `SRV-004` No timers and no polling on the server: login-session cleanup piggybacks on logins, robots and
   consoles keep their own WebSocket alive.
 - `SRV-005` Argon2id (19 MiB, t=2) costs ~30 ms of the only thread per login; nginx limits `/api/v1/login`
@@ -64,17 +65,25 @@ Run as the service user so the database stays owned by it: `sudo -u aerolink aer
 ```
 aerolink operator add <email> <name>      password from stdin (≥ 10 chars; no echo on a terminal)
 aerolink operator passwd|disable|enable <email>   passwd/disable log out every session
+aerolink operator role <email> admin|operator
+aerolink operator fleets <email> <fleet,…|all>    fleets an admin sees (ids or names); all = also later ones
 aerolink operator list
-aerolink robot add <name>                 prints the robot token once: "<id>.<secret>"
+aerolink robot add <name> [fleet]         prints the robot token once: "<id>.<secret>"; default fleet 1
 aerolink robot token <id>                 new token, the old one stops working
 aerolink robot disable|enable <id>
+aerolink robot fleet <id> <fleet>
 aerolink robot list
+aerolink fleet add <name>
+aerolink fleet list
 aerolink telegram-test
 aerolink guard [serve]                    firewall bans from nginx's security log (aerolink-guard.service)
 aerolink guard list | unban <ip>          as root
 aerolink completion bash                  bash completion script (the .deb installs it)
 aerolink help [command]                   overview, or the details of a command (= aerolink <command> --help)
 ```
+
+CLI changes reach the running service when the robot or console connects again (role and fleet changes: the
+user's next console connection); the same changes made on the console's admin pages apply at once.
 
 `help`, `version` and `completion` work without reading the configuration, so for any user. Bash completion
 covers commands and subcommands; robot ids, operator e-mails and banned addresses are completed from the
@@ -93,11 +102,22 @@ JSON, under `/api/v1/`, body ≤ 16 KiB. Errors are `{"error": "<code>"}` with t
 | `GET /api/v1/me` | cookie | `200` user, `401` |
 | `GET /api/v1/health` | localhost only (nginx) | `{status, version, operators, robots_online}` |
 | `GET /api/v1/robot/apk/<abi>` | robot token (`Bearer`) | APK of the current release (`ROB-008`); `404` for an unknown ABI |
+| `GET /api/v1/admin/robots/<id>/events?before=<event id>` | admin | `{events: [RobotEvent]}`, newest first, 50 per page |
+| `POST /api/v1/admin/robots` `{name, fleet}` | admin | `{id, token}` (token shown once) |
+| `POST /api/v1/admin/robots/<id>` `{action, …}` | admin | `rename {name}`, `fleet {fleet}`, `disable`, `enable`, `token` (→ `{token}`, the robot is disconnected), `read_errors` |
+| `GET /api/v1/admin/users` | admin | `{users: [user + disabled, online, robots]}` |
+| `POST /api/v1/admin/users` `{email, name, password, role}` | admin of all fleets | the new user |
+| `POST /api/v1/admin/users/<id>` `{action, …}` | admin of all fleets | `disable`, `enable`, `password {password}`, `role {role}`, `fleets {all, fleets}` |
+| `POST /api/v1/admin/fleets` `{name}` | admin of all fleets | `{id, name}` |
+| `GET /api/v1/admin/audit?before=<entry id>` | admin | `{entries: [AuditEntry]}`, newest first, 50 per page |
 
 - `SRV-020` Session cookie `__Host-aerolink`: `HttpOnly; Secure; SameSite=Strict; Path=/`, 30 days.
   CSRF: `SameSite=Strict`, JSON-only bodies (a cross-site form cannot send `application/json`) and the Origin
   check on the operator WebSocket.
 - `SRV-021` Unknown e-mails take as long as wrong passwords (a dummy Argon2 check).
+- `SRV-022` `/me` and `login` return `{id, email, name, role, all_fleets, fleets}`. Admin API errors: `403` not an
+  admin (or not of all fleets where that is needed, or an admin changing their own role/fleets/blocking themselves),
+  `404` a robot outside the admin's fleets, `409` a taken name or e-mail, `400` bad input.
 
 ## Signaling
 
@@ -122,7 +142,7 @@ Rules:
 - `SIG-004` Robot status (`status`) is stored and broadcast to every operator only when it changes; robots
   send it on change only (no periodic chatter, `PWR-012`).
 - `SIG-005` The console makes the offer; the robot answers. ICE is trickled both ways.
-- `SIG-006` All robots are visible to all operators for now; rental/ownership will add an access table.
+- `SIG-006` All enabled robots are visible to all operators for now; operators' access moves to fleets with Q8.
 - `SIG-007` Network change (Wi-Fi ↔ cellular, cell handover): the robot's old connection usually goes silent
   rather than closing, so the robot reconnects with `?session=<id>` and replaces it. If that session is still
   the robot's, it carries on: the robot hears `session` again (fresh TURN credentials), the operator hears
@@ -134,13 +154,16 @@ Robot → server:
 
 | `type` | Fields | |
 |--------|--------|--|
-| `status` | `mode` (`IDLE`, `TELEOP`, `AUTO`, `NEEDS_HELP`), `phone_battery` %, `robot_battery_mv`, `charge_control` (bool), `app`, `firmware` — all optional | on change |
+| `status` | `mode` (`IDLE`, `TELEOP`, `AUTO`, `NEEDS_HELP`), `phone_battery` %, `robot_battery_mv`, `charge_control` (bool), `app`, `firmware`, `phone`, `android`, `network {type: wifi\|cellular\|other, operator?, signal? 0..4}`, `app_update`, `firmware_update`, `device_owner`, `started` (Unix s) — all optional (`ADM-001`) | on change |
+| `location` | `lat`, `lon`, `accuracy_m`?, `at` (Unix s) (`ADM-002`) | moved ≥ 10 m |
+| `event` | `level` (`info`, `warning`, `error`), `code`, `message`, `at` (Unix s) (`ADM-003`) | when it happens; queued while offline |
 | `answer` | `session`, `sdp` (RTCSessionDescriptionInit) | |
 | `ice` | `session`, `candidate` (RTCIceCandidateInit) | |
 | `end` | `session` | robot ends the session |
 | `ping` | | answered with `pong` |
 
-Operator → server: `take {robot}`, `offer {session, sdp}`, `ice {session, candidate}`, `release {session}`, `ping`.
+Operator → server: `take {robot}`, `offer {session, sdp}`, `ice {session, candidate}`, `release {session}`, `ping`;
+admins also `admin_end {session}`, `admin_take {robot}` (`ADM-014`).
 
 Server → both:
 
@@ -149,15 +172,22 @@ Server → both:
 | `welcome` | `you {id, name}` | first message |
 | `robots` | `robots: [RobotView]` | operators, after `welcome` |
 | `robot` | `robot: RobotView` | operators, on any change |
+| `robot_gone` | `robot` (id) | operators: the robot was disabled |
+| `fleet` | `fleets: [{id, name}]`, `robots: [RobotAdminView]` | admins, after `robots`, and again when fleets or a robot's fleet change |
+| `fleet_robot` | `robot: RobotAdminView` | admins of the robot's fleet, on any change |
+| `robot_event` | `robot`, `event: RobotEvent` | admins of the robot's fleet |
 | `session` | `session`, `robot`, `peer {id, name}`, `ice_servers` (RTCIceServer[] with TURN credentials) | to both ends |
 | `offer` / `answer` / `ice` | as sent by the peer | |
-| `end` | `session`, `reason` (`released`, `robot_ended`, `robot_offline`, `operator_offline`) | |
+| `end` | `session`, `reason` (`released`, `robot_ended`, `robot_offline`, `operator_offline`, `admin`) | |
 | `resumed` | `session` | operators: the robot reconnected and kept the session, restart ICE (`SIG-007`) |
 | `update` | `version_code`, `version_name`, `apks: {<abi>: {size, sha256}}` | robots, after `welcome` and on `systemctl reload` when the release changed (`ROB-008`) |
-| `error` | `code` (`not_found`, `offline`, `busy`, `no_session`), `robot`? | operators |
+| `error` | `code` (`not_found`, `offline`, `busy`, `no_session`, `forbidden`), `robot`? | operators |
 | `pong` | | |
 
 `RobotView = {id, name, online, status, operator}` (`operator` = user id holding the robot, or `null`).
+`RobotAdminView = {id, name, fleet, disabled, online, status, location, last_seen, unread_errors, session, operator}`
+(`status` and `location` are the last known ones, also while offline; `last_seen` is `null` while online;
+`operator` = `{id, name}`). `RobotEvent = {id, level, code, message, at, received}`.
 
 ## Control channel (console ↔ robot, peer-to-peer)
 
@@ -234,14 +264,24 @@ The phone's implementation (`android/`, packages `signal`, `teleop`, `rtc`, `ser
   screen, log tag `AeroLinkFirmware`. Works also when the protocol versions differ (that is what the update is
   for). The simulated base takes updates too (its "flash" lives as long as the app process, so a bench phone
   updates it after every app start).
+- `ROB-010` Admin data (`ADM-001..003`): the extended `status` (phone model, Android version, network sampled when
+  the network changes, update states, Device Owner, service start), `location` (`LocationReporter`) and `event`
+  (`EventQueue`: up to 50, kept in preferences across restarts, sent after `welcome`). Events: `app_crash` (the
+  previous run's stack trace), `base_fault`, `base_no_response`, `base_incompatible`, `app_update_failed`,
+  `firmware_update_failed`, `firmware_rolled_back`, `phone_battery_low` (≤ 15 %). Log tag `AeroLinkService`.
+- `ROB-011` Crash recovery: a provisioned robot ends its own process after a crash (trace saved for `app_crash`)
+  instead of handing it to the system's handler, which after a second crash within a minute shows a dialog and
+  stops restarting the service. The system restarts the sticky service with its own growing delay; the base has
+  stopped already (USB detach / command timeout, `docs/05-safety.md`).
 - `ROB-006` Bench: debug builds allow plain `http://`/`ws://` and offer a simulated robot base
   (`SimulatedBase`: firmware state machine incl. the command timeout, telemetry, wheel speeds from DRIVE)
   when no RP2040 is attached. Release builds are TLS-only and never simulate.
 
-## Fleet administration (planned, Stage 3a)
+## Fleet administration
 
 An **admin** (`users.role = 'admin'`) sees the robots of the fleets assigned to them and can intervene; operators
-keep the console as it is.
+keep the console as it is. Code: `hub.rs` (views, access, `admin_end`/`admin_take`), `admin.rs` (REST),
+`frontend/src/console/admin/`, Android `service/{RobotEvents,LocationReporter,NetworkMonitor}.kt`.
 Everything is pushed over the existing WebSockets on change: no polling by the browser, no timers on the server,
 and the robot only sends when something changed (`PWR-012`).
 
@@ -257,34 +297,42 @@ Robot data:
 - `ADM-003` Errors: robot → server `event {level, code, message, at}` for app crashes (written on the next start),
   base faults (`SAFE-006`), USB link errors, failed updates, low batteries, `NEEDS_HELP`. Events are queued on the
   phone while offline (bounded, oldest dropped) and sent after `welcome`. `error`-level events also go to Telegram
-  (`SRV-010`), batched like server errors.
+  (`SRV-010`), batched like server errors, but not to the server's error log (they are stored with the robot).
 - `ADM-004` Storage: last known `status`, `location` and `last_seen` per robot in the database (written only when a
   message arrives), so offline robots show where and how they were last; events in `robot_events` (last 500 per
   robot, trimmed on insert); admin actions in `audit` (who, what, when).
 - `ADM-005` Fleets: every robot belongs to one fleet (`fleets`, `robots.fleet_id`); an admin has a list of fleets
   (`user_fleets`) or the `all_fleets` flag, which also covers fleets created later. Every admin view, event,
   REST answer and action is limited to those fleets, checked by the server. CLI: `aerolink fleet add|list`,
-  `aerolink robot fleet <id> <fleet>`, `aerolink operator fleets <email> <fleet,…|all>`. Operators' access to
-  robots (today: all, `SIG-006`) moves to the same fleets with Q8.
+  `aerolink robot fleet <id> <fleet>`, `aerolink operator fleets <email> <fleet,…|all>`. Fleet 1 `default` exists
+  from the start. Managing users and creating fleets needs `all_fleets` (an admin of some fleets could otherwise
+  widen their own rights); nobody can change their own role or fleets or block themselves. Changed rights apply at
+  once: the user's consoles are disconnected and reconnect with the new ones. Operators' access to robots (today:
+  all, `SIG-006`) moves to the same fleets with Q8.
 
 Admin console (`/console/`, same login; the tab exists only for admins, the server checks the role on every
 admin message):
 
 - `ADM-010` Fleet table: online / last seen, mode, operator holding it, phone and robot battery, charge control,
   network, app / firmware version and update state, unread errors; sortable, filter by text.
-- `ADM-011` Map of last known positions: Leaflet with public OpenStreetMap tiles (Q9, attribution shown); the
-  console CSP gets `img-src https://tile.openstreetmap.org`. The tile URL is one setting, so a paid or
-  self-hosted source replaces it later.
+- `ADM-011` Map of last known positions: public OpenStreetMap tiles (Q9, attribution shown, a Referer sent as the
+  tile policy asks) in a small built-in Web Mercator view (`OsmMap.svelte`: pan, wheel zoom, fit) instead of a map
+  library; the CSP has `img-src https://tile.openstreetmap.org`. The tile URL is one constant (`lib/admin.ts`
+  `TILE_URL`), so a paid or self-hosted source replaces it later (with the CSP).
 - `ADM-012` Robot page: all of the above, the event log, and actions:
   - **End session**: the operator hears `end` with reason `admin`; the robot stops (`SAFE-010`).
   - **Take over**: ends the operator's session the same way and opens one for the admin in the normal console
     view; the robot is DISARMED in between, the admin must ARM.
-  - **Disable / enable**, **new token** (shown once), **rename**, **add robot** — the CLI stays as well.
+  - **Disable / enable** (a disabled robot is disconnected at once), **new token** (shown once; the robot is
+    disconnected), **rename**, **move to a fleet**, **mark errors read**, **add robot** — the CLI stays as well.
 - `ADM-013` Operators page: online, robots held right now; add, disable, reset password, change role.
 - `ADM-014` Signaling: admin → server `admin_end {session}`, `admin_take {robot}` (as `take`, but a held robot is
-  taken over), `admin_robot {robot, action, …}`, `admin_user {user, action, …}`; server → admin
-  `fleet {robots: [RobotAdminView]}` after `welcome`, `fleet_robot` on change, `robot_event` on each new event.
-  REST for history: `GET /api/v1/admin/robots/<id>/events?before=<id>`, `GET /api/v1/admin/audit`.
-- `ADM-015` Tests: hub unit tests (role and fleet checks, take-over, end), end-to-end with an admin and an operator in
-  `make e2e`, i18n parity for the new strings.
+  taken over); server → admin `fleet` after `robots`, `fleet_robot` on change, `robot_event` on each new event.
+  Changes to robots, users and fleets go over REST (`/api/v1/admin/…`, "HTTP API": request/response, the token
+  shown once), are written to `audit` and pushed to every console through the hub. History over REST: events and
+  the audit log (entries about the admin's fleets; everything for admins of all fleets).
+- `ADM-015` Tests: hub unit tests (role and fleet checks, take-over, end, disable, fleet moves), database tests,
+  HTTP/WebSocket end-to-end in `server.rs` (admin vs operator vs admin of another fleet), console end-to-end in
+  `make e2e` (fleet table, map marker, robot events, take-over), Android JVM tests (`EventQueue`, messages),
+  vitest for the table and map math, i18n parity for the new strings.
 

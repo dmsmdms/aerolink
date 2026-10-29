@@ -12,6 +12,8 @@ import com.aerolink.robot.BuildConfig
 import com.aerolink.robot.service.DeviceOwner
 import com.aerolink.robot.service.RobotConfig
 import com.aerolink.robot.signal.AppRelease
+import com.aerolink.robot.signal.EventLevel
+import com.aerolink.robot.signal.RobotEvent
 import com.aerolink.robot.signal.SignalingClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -53,6 +55,17 @@ sealed class UpdateStatus {
     data class Installing(val version: String) : UpdateStatus()
 
     data class Failed(val version: String, val error: String) : UpdateStatus()
+
+    /** For the server's `status` (ADM-001): coarse, so download progress causes no chatter. */
+    val wire: String
+        get() = when (this) {
+            Current -> "current"
+            is Blocked -> "blocked"
+            is Waiting -> "waiting"
+            is Downloading -> "downloading"
+            is Installing -> "installing"
+            is Failed -> "failed"
+        }
 }
 
 /** The decision for an announced release (pure, JVM-tested). */
@@ -92,6 +105,8 @@ class Updater(
     private val idle: Flow<Boolean>,
     private val config: () -> RobotConfig,
     private val http: OkHttpClient = SignalingClient.defaultHttp,
+    /** ADM-003: failed updates are reported to the admins. */
+    private val report: (RobotEvent) -> Unit = {},
 ) {
     private val _status = MutableStateFlow<UpdateStatus>(UpdateStatus.Current)
     val status: StateFlow<UpdateStatus> = _status.asStateFlow()
@@ -207,6 +222,7 @@ class Updater(
         Log.w(TAG, "update to $version failed: $error")
         prefs.edit().putString(KEY_ERROR, error).apply()
         _status.value = UpdateStatus.Failed(version, error)
+        report(RobotEvent(EventLevel.ERROR, "app_update_failed", "$version: $error", System.currentTimeMillis() / 1000))
     }
 
     private fun canInstallSilently(): Boolean =

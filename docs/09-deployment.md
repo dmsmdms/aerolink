@@ -120,6 +120,19 @@ the console is used from desktops and WebSockets do not run over HTTP/3 in nginx
 - `OPS-022` `aerolink-guard.socket` (datagram, 0660 aerolink:www-data, 1 MiB receive buffer) and
   `aerolink-guard.service` (see OPS-013), hardened the same way plus `CAP_NET_ADMIN` and `AF_NETLINK`.
 
+## Admins
+
+- `OPS-040` The first admin comes from the CLI; afterwards admins of all fleets manage users and fleets on the
+  console's admin pages (`ADM-012/013`), and every change there is in the audit log:
+  ```sh
+  sudo -u aerolink aerolink operator add boss@example.com "Boss"     # password from stdin
+  sudo -u aerolink aerolink operator role boss@example.com admin
+  sudo -u aerolink aerolink operator fleets boss@example.com all
+  sudo -u aerolink aerolink fleet add north                          # robots: aerolink robot fleet <id> north
+  ```
+  An admin of some fleets: `aerolink operator fleets <email> north,south`. The map loads public OpenStreetMap tiles
+  in the admin's browser (Q9); the CSP in `snippets/aerolink-headers.conf` allows exactly that host.
+
 ## Robot phone
 
 - `OPS-030` Provisioning (`PWR-014`), once per phone, **after a factory reset and before any Google or Samsung
@@ -129,7 +142,7 @@ the console is used from desktops and WebSockets do not run over HTTP/3 in nginx
   adb shell dpm set-device-owner com.aerolink.robot/.service.AdminReceiver
   ```
   Then open the app, enter the server address and robot token. As Device Owner the app grants itself camera,
-  microphone and notification permissions, switches off the lock screen (only without a PIN/pattern) and installs
+  microphone, location (`ADM-002`) and notification permissions, switches off the lock screen (only without a PIN/pattern) and installs
   updates silently. "Remove Device Owner" on the diagnostics screen gives the phone back (decommissioning).
   Bench phones that cannot be reset keep working without it, minus silent updates.
 - `OPS-033` Robot base (RP2040), once per board with a PC: hold BOOTSEL while plugging it into the PC, then

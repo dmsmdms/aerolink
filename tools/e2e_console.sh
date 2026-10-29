@@ -42,6 +42,9 @@ AEROLINK_LOG=warn
 CONF
 export AEROLINK_CONFIG="$WORK/env"
 echo password1234 | "$BIN" operator add op@x.org Op >/dev/null
+echo password1234 | "$BIN" operator add admin@x.org Admin >/dev/null
+"$BIN" operator role admin@x.org admin
+"$BIN" operator fleets admin@x.org all
 TOKEN="$("$BIN" robot add r1 2>/dev/null | tail -1)"
 PHONE_TOKEN="$("$BIN" robot add phone 2>/dev/null | tail -1)"
 

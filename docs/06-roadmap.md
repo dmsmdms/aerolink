@@ -43,15 +43,20 @@ Done: flashlight headlight (`CTL-004`), two-way audio through the loudspeaker, s
 change (`SIG-007`: resume after a signaling reconnect, ICE restart, continual ICE gathering), video tuning
 (H.264 preferred by the console, 1.5 Mbit/s cap, frame rate kept, rotation pinned to the mount; `PWR-013`,
 `ROB-007`), app updates from the server (`ROB-008`: silent install as Device Owner, `PWR-014`; tested as a
-self-update on the Pixel), firmware updates through the app (3b below: done except the hardware runs).
-Next: 3a; Device Owner check on the robot phone once it is available.
+self-update on the Pixel), firmware updates through the app (3b below: done except the transfer over a real AOA link).
+Next: Device Owner check on the robot phone once it is available.
 
 **Compatibility:** until the first release is declared, database schemas, settings, protocols and file formats
 are changed in place (no migrations, no compatibility code; `db.rs` `MIGRATIONS` is rewritten as one step).
 From the first release on, every change needs a migration and must keep deployed robots and servers working.
 
 ### Stage 3a — fleet administration and error reporting ([08](08-backend.md) "Fleet administration")
-Everything here can be built and tested now (PC + Pixel bench, `make e2e`).
+Done: admin role and fleets (CLI + console), last known robot state in the database, robot events with Telegram
+for errors, audit log; admin view, take-over and end over signaling, admin REST API; console pages Fleet (table,
+OpenStreetMap map, robot page with events and actions), Users, Audit log (EN + RU); robot app: extended status,
+location policy, event queue with crash capture (`ROB-010`). Tested: hub/database/HTTP + WebSocket in `cargo test`,
+console and take-over in `make e2e`, Android JVM tests. Open: the phone side on a real phone (network info,
+passive/GPS location, events) — bench check on the Pixel, location as Device Owner on the SM-J710F.
 
 1. Backend: `admin` role (CLI `aerolink operator role <email> admin|operator`), fleets and admins' fleet lists
    (`ADM-005`), schema with last known robot state, `robot_events`, `audit`; hub: admin views, `admin_end`,
@@ -71,9 +76,10 @@ FW_* receiver and REBOOT, `PROTO_VERSION` 2, HELLO_ACK with `fw_crc32`/`boot`; h
 flash incl. a power cut after every flash operation (`LINK-040..046`, `SAFE-007`); vectors and Kotlin codec;
 firmware image in the APK, `FirmwareUpdater`, `SimulatedBase` support, diagnostics (`ROB-009`). Bench-tested on
 the Pixel against the simulated base (40 KB sent, reboot, trial, confirm in < 1 s).
-Open: the loader and a real AOA transfer on hardware — on a bare Pico via PC (flash `aerolink-rp2040.uf2`, then
-write a staged image and boot record with `picotool`: normal, corrupted, crashing → rollback, unplugging during
-the copy), and the FW_* path once the phone ↔ RP2040 wiring exists (with OTG and the wheels).
+Loader tested on a bare RP2040 board (`make hwtest-rp2040`, `tools/hwtest_rp2040.py`: install, trial, rollback
+of an unconfirmed and of a hanging image by the watchdog, damaged staging and active images, interrupted copy,
+torn record, empty slot; plus unplugging the board during the copies of two 480 KB images).
+Open: a real AOA transfer (FW_* from the phone) once the phone ↔ RP2040 wiring exists (with OTG and the wheels).
 
 **Acceptance:** a newer APK brings new firmware to a robot with no PC; a power cut at any moment leaves a
 working board; a firmware that never confirms is rolled back after 3 boots; motors stay at zero throughout.

@@ -14,3 +14,5 @@
 /backend/target/
 
 /frontend/node_modules/
+
+/tools/__pycache__/

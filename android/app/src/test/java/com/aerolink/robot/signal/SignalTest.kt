@@ -69,6 +69,44 @@ class SignalTest {
     }
 
     @Test
+    fun buildsAdminMessages() {
+        val status = JSONObject(
+            SignalOut.status(
+                RobotStatus(
+                    phone = "SM-J710F", android = "6.0.1", deviceOwner = true, started = 1700000000,
+                    network = NetworkInfo(NetworkType.CELLULAR, "kyivstar", 3), appUpdate = "blocked",
+                ),
+            ),
+        )
+        assertEquals("SM-J710F", status.getString("phone"))
+        assertEquals("cellular", status.getJSONObject("network").getString("type"))
+        assertEquals(3, status.getJSONObject("network").getInt("signal"))
+        assertEquals("blocked", status.getString("app_update"))
+        assertEquals(1700000000L, status.getLong("started"))
+        assertFalse(JSONObject(SignalOut.status(RobotStatus(network = NetworkInfo(NetworkType.WIFI)))).getJSONObject("network").has("signal"))
+
+        val location = JSONObject(SignalOut.location(Fix(50.45, 30.52, 8.5f, 99)))
+        assertEquals("location", location.getString("type"))
+        assertEquals(50.45, location.getDouble("lat"), 0.0)
+        assertEquals(8.5, location.getDouble("accuracy_m"), 0.0)
+        assertFalse(JSONObject(SignalOut.location(Fix(1.0, 2.0, null, 1))).has("accuracy_m"))
+
+        val event = RobotEvent(EventLevel.ERROR, "crash", "boom", 5)
+        val json = JSONObject(SignalOut.event(event))
+        assertEquals("event", json.getString("type"))
+        assertEquals("error", json.getString("level"))
+        assertEquals(event, RobotEvent.parse(json))
+    }
+
+    @Test
+    fun batteryStepsOutsideASession() {
+        assertEquals(55, batteryStep(57, session = false))
+        assertEquals(57, batteryStep(57, session = true))
+        assertEquals(100, batteryStep(100, session = false))
+        assertNull(batteryStep(null, session = false))
+    }
+
+    @Test
     fun socketUrlFromServerOrigin() {
         assertEquals("wss://robots.example.org/ws/robot", SignalingClient.robotSocketUrl("https://robots.example.org/"))
         assertEquals("ws://192.168.1.5:8080/ws/robot", SignalingClient.robotSocketUrl(" http://192.168.1.5:8080 "))

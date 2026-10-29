@@ -15,7 +15,7 @@ TOOLS := $(CURDIR)/tools
 .PHONY: all rp2040 android frontend backend \
         clean clean-rp2040 clean-android clean-frontend clean-backend \
         test test-rp2040 test-android test-backend test-frontend e2e bench-server vectors \
-        flash install-apk help
+        flash hwtest-rp2040 install-apk help
 
 all: rp2040 android backend ## Build everything (default)
 
@@ -72,6 +72,9 @@ clean-backend: ## Clean backend build
 
 flash: ## Flash firmware via picotool (board in BOOTSEL mode or running AeroLink fw)
 	@$(TOOLS)/flash_rp2040.sh
+
+hwtest-rp2040: rp2040 ## Loader test on a bare board in BOOTSEL (overwrites its flash; make flash afterwards)
+	@$(TOOLS)/hwtest_rp2040.py $(SCENARIOS)
 
 install-apk: ## Install build/aerolink-<abi>.apk matching the connected phone via adb
 	@$(TOOLS)/install_android.sh
