@@ -1,0 +1,54 @@
+[Unit]
+Description=AeroLink guard: bans abusive clients in nftables
+Documentation=file:///usr/share/doc/aerolink/
+Requires=aerolink-guard.socket
+After=aerolink-guard.socket nftables.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/aerolink guard
+Environment=AEROLINK_GUARD_LISTEN=systemd
+User=aerolink
+Group=aerolink
+LogsDirectory=aerolink
+LogsDirectoryMode=0750
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+
+# The only privilege: changing the firewall (inherited by the `nft` it runs).
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+# Resource caps: one thread plus a short-lived `nft` per ban.
+MemoryMax=64M
+TasksMax=8
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

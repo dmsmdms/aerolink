@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Must match the AOA strings sent by rp2040/src/usb_aoa.c (docs/03-usb-link.md LINK-002/003). -->
+<resources>
+    <usb-accessory manufacturer="AeroLink" model="RobotBase" />
+</resources>

@@ -3,7 +3,7 @@ package com.aerolink.robot.link
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-// USB link message set, protocol v1 (docs/03-usb-link.md "Messages"); mirrors rp2040/src/messages.h.
+// USB link message set, protocol v2 (docs/03-usb-link.md "Messages"); mirrors rp2040/src/messages.h.
 
 enum class DriveSource(val code: Int) { LOCAL(0), OPERATOR(1), AUTOPILOT(2) }
 
@@ -39,6 +39,37 @@ object NackReason {
     const val BAD_STATE = 1
     const val BAD_ARG = 2
     const val FAULT_ACTIVE = 3
+}
+
+/** FW_ACK status (LINK-040..042). */
+object FwStatus {
+    const val OK = 0
+    const val BAD_STATE = 1
+    const val BAD_OFFSET = 2
+    const val TOO_BIG = 3
+    const val FLASH_FAIL = 4
+    const val CRC_FAIL = 5
+}
+
+/** How the running firmware was started (HELLO_ACK `boot`, LINK-044). */
+enum class FirmwareBoot(val code: Int) {
+    NORMAL(0),
+    /** A new image on trial: the phone confirms it, otherwise the loader rolls back. */
+    TRIAL(1),
+    /** The previous image was restored because the new one never got confirmed. */
+    ROLLED_BACK(2);
+
+    companion object {
+        fun of(code: Int) = entries.firstOrNull { it.code == code } ?: NORMAL
+    }
+}
+
+/** Flash geometry the update protocol is built around (rp2040/src/fwstore.h). */
+object FirmwareFlash {
+    const val SECTOR = 4096
+    const val SLOT_SIZE = 0x80000
+    /** FW_DATA: offset (4 bytes) + data within the 60-byte payload. */
+    const val CHUNK = 56
 }
 
 private fun payload(size: Int, fill: ByteBuffer.() -> Unit): ByteArray =
@@ -88,9 +119,29 @@ sealed class Command(val type: Int) {
         }
     }
 
-    data object RebootBootsel : Command(0x07) {
-        const val MAGIC = 0x544F4F42 // "BOOT"
-        override fun payload() = payload(4) { putInt(MAGIC) }
+    /** LINK-034: [bootsel] = USB mass-storage boot for PC flashing, otherwise through the loader. */
+    data class Reboot(val bootsel: Boolean = false) : Command(0x07) {
+        override fun payload() = payload(5) { putInt(MAGIC).put((if (bootsel) 1 else 0).toByte()) }
+
+        companion object {
+            const val MAGIC = 0x544F4F42 // "BOOT"
+        }
+    }
+
+    data class FwBegin(val size: Int, val crc32: Long) : Command(0x08) {
+        override fun payload() = payload(8) { putInt(size).putInt(crc32.toInt()) }
+    }
+
+    class FwData(val offset: Int, val data: ByteArray) : Command(0x09) {
+        override fun payload() = payload(4 + data.size) { putInt(offset).put(data) }
+    }
+
+    data object FwEnd : Command(0x0A) {
+        override fun payload() = ByteArray(0)
+    }
+
+    data object FwConfirm : Command(0x0B) {
+        override fun payload() = ByteArray(0)
     }
 }
 
@@ -101,6 +152,9 @@ sealed class Report {
         val firmwareVersion: String,
         val caps: Int,
         val boardId: Long,
+        /** CRC-32 of the running image: compared with the image this app carries (ROB-009). */
+        val firmwareCrc: Long,
+        val boot: FirmwareBoot,
     ) : Report()
 
     data class Telemetry(
@@ -121,6 +175,9 @@ sealed class Report {
 
     data object Pong : Report()
 
+    /** [offset]: bytes of the image durably in flash. */
+    data class FwAck(val offset: Int, val status: Int) : Report()
+
     companion object {
         /** Typed view of a firmware frame, or null for unknown type / wrong length (LINK-012). */
         fun parse(frame: Frame): Report? {
@@ -129,11 +186,14 @@ sealed class Report {
             fun u16() = p.short.toInt() and 0xFFFF
             fun i16() = p.short.toInt()
             return when {
-                frame.type == 0x81 && frame.payload.size == 16 -> HelloAck(
+                // HELLO_ACK may grow at the end (it is frozen across protocol versions, LINK-030).
+                frame.type == 0x81 && frame.payload.size >= 21 -> HelloAck(
                     protocolVersion = u8(),
                     firmwareVersion = "${u8()}.${u8()}.${u8()}",
                     caps = p.int,
                     boardId = p.order(ByteOrder.BIG_ENDIAN).long,
+                    firmwareCrc = p.order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL,
+                    boot = FirmwareBoot.of(u8()),
                 )
                 frame.type == 0x82 && frame.payload.size == 13 -> Telemetry(
                     state = RobotState.of(u8()),
@@ -147,6 +207,7 @@ sealed class Report {
                 frame.type == 0x83 && frame.payload.size == 3 -> Event(u8(), u16())
                 frame.type == 0x84 && frame.payload.size == 2 -> Nack(u8(), u8())
                 frame.type == 0x85 && frame.payload.isEmpty() -> Pong
+                frame.type == 0x86 && frame.payload.size == 5 -> FwAck(p.int, u8())
                 else -> null
             }
         }

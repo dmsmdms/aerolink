@@ -12,3 +12,6 @@ requirement IDs (e.g. `LINK-010`) are referenced from code comments and commits.
 | 05 | [Safety](05-safety.md) | Failsafes, limits, command arbitration |
 | 06 | [Roadmap](06-roadmap.md) | MVP stages and acceptance criteria |
 | 07 | [Open questions](07-open-questions.md) | Unresolved decisions |
+| 08 | [Backend and signaling](08-backend.md) | Server process, API, signaling and console ↔ robot control protocol |
+| 09 | [Deployment](09-deployment.md) | Debian package, nginx (pre-compressed static, abuse filtering), systemd, firewall guard, coturn |
+| 10 | [Packages](10-packages.md) | Debian packages for building and for running the server |

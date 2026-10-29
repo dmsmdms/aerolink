@@ -3,9 +3,9 @@
 ```
  Operator browser                 Server (Debian)                     Robot
 ┌──────────────────┐   HTTPS/WS  ┌──────────────────┐  WS (signaling) ┌──────────────────────┐   USB (AOA)  ┌────────┐ UART/GPIO ┌────────────┐
-│ frontend (Svelte)│◄───────────►│ backend (Rust)   │◄───────────────►│ Android app (Kotlin) │◄────────────►│ RP2040 │◄─────────►│ hoverboard │
+│ frontend (Svelte)│◄───────────►│ nginx + backend  │◄───────────────►│ Android app (Kotlin) │◄────────────►│ RP2040 │◄─────────►│ hoverboard │
 │ video, gamepad   │             │ auth, registry,  │                 │ link service, camera,│              │ fw (C) │           │ mainboard  │
-└────────▲─────────┘             │ signaling, relay │                 │ WebRTC, arbitration  │              └────────┘           └────────────┘
+└────────▲─────────┘             │ signaling        │                 │ WebRTC, arbitration  │              └────────┘           └────────────┘
          │                       └──────────────────┘                 └──────────▲───────────┘
          └──────────── WebRTC media + DataChannel (via coturn TURN when needed) ──┘
 ```
@@ -16,8 +16,8 @@
 |-----|-----------|------------|
 | `rp2040/` | Firmware | C11, Pico SDK (`/opt/pico-sdk`, override with `PICO_SDK_PATH`), TinyUSB host, CMake + Ninja |
 | `android/` | Robot app `com.aerolink.robot` | Kotlin, coroutines/Flow, minSdk 23 (Android 6.0), Compose only for the bench diagnostics screen |
-| `backend/` | Server `aerolink` | Rust (edition 2024), tokio + axum (stage 2), `.deb` + systemd |
-| `frontend/` | Operator console (stage 2) | TypeScript + Svelte + Vite, served by nginx |
+| `backend/` | Server `aerolink` | Rust (edition 2024), tokio current-thread + axum, SQLite, `.deb` + systemd + nginx site ([08](08-backend.md), [09](09-deployment.md)) |
+| `frontend/` | Landing + operator console | TypeScript + Svelte 5 + Vite, pre-compressed static files served by nginx |
 | `protocol/` | USB protocol test vectors (stage 1) | JSON, consumed by both firmware and Android tests |
 
 ## Responsibilities
@@ -26,8 +26,10 @@
   commands stop arriving, and reports telemetry. It knows nothing about operators or networks.
 - **Phone** owns the robot state: operator session, command arbitration (operator vs future autopilot),
   media capture, network. It enforces its own link-loss stop on top of the firmware failsafe.
-- **Backend** authenticates operators and robots, keeps the robot registry, relays signaling and,
-  when WebRTC cannot connect, control messages. Media goes peer-to-peer or through TURN, not through Rust.
+- **Backend** authenticates operators and robots, keeps the robot registry and relays signaling only.
+  Media **and control** (DRIVE, ARM) go peer-to-peer between console and robot over WebRTC, through TURN
+  (coturn) when NAT leaves no direct path — never through the backend ([08](08-backend.md)).
+- **nginx** terminates TLS, serves the pre-compressed static files and filters abuse ([09](09-deployment.md)).
 
 ## Robot modes and operators
 
@@ -51,4 +53,5 @@ EFeru `hoverboard-firmware-hack-FOC`.
 - Firmware: single-core super-loop + IRQs, no RTOS, no dynamic allocation, hardware watchdog always on.
   Protocol codec and control logic have no SDK dependencies and are unit-tested on the host (`make test`).
 - Android: coroutines/Flow only, no custom executors or RxJava. Blocking USB reads live in one coroutine on `Dispatchers.IO`.
-- Backend: one tokio runtime, no `std::thread::spawn`.
+- Backend: one process, one thread (tokio current-thread runtime), no `std::thread::spawn`, no timers or
+  polling; blocking work stays tiny (SQLite queries, one Argon2 check per login).

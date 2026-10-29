@@ -14,7 +14,9 @@ if ! command -v picotool > /dev/null; then
     exit 1
 fi
 
-# -f reboots a running board into BOOTSEL if possible, -x starts the new image.
+# The board must be in BOOTSEL (hold the button while plugging it in): our firmware's USB port is the AOA host,
+# so -f cannot reboot it from here. The UF2 holds the loader, an erased boot record and the application
+# (docs/09-deployment.md OPS-033); -x starts it.
 echo "⚡ Flashing $UF2..."
 picotool load -f -x -v "$UF2"
 

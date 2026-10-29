@@ -1,0 +1,14 @@
+# Socket activation: systemd owns the listening socket, so nginx never sees "connection refused"
+# while the service restarts, and no TCP port is opened (docs/09-deployment.md).
+[Unit]
+Description=AeroLink backend socket
+
+[Socket]
+ListenStream=/run/aerolink.sock
+SocketUser=aerolink
+SocketGroup=www-data
+SocketMode=0660
+Backlog=512
+
+[Install]
+WantedBy=sockets.target

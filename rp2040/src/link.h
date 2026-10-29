@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "control.h"
+#include "fwupdate.h"
 #include "motor.h"
 #include "proto.h"
 
@@ -17,6 +18,7 @@ typedef bool (*link_tx_fn)(const uint8_t *data, size_t len, void *ctx);
 
 typedef struct {
     control_t *ctl;
+    fwupdate_t *fw;
     link_tx_fn tx;
     void *tx_ctx;
 
@@ -32,10 +34,11 @@ typedef struct {
     bool boot_reported;
 
     uint32_t next_telemetry;
-    bool bootsel_requested;  // set by REBOOT_BOOTSEL, acted upon by main
+    bool reboot_requested;  // set by REBOOT, acted upon by main (after the reply went out)
+    uint8_t reboot_mode;    // REBOOT_*
 } link_t;
 
-void link_init(link_t *l, control_t *ctl, uint32_t caps, const uint8_t board_id[8],
+void link_init(link_t *l, control_t *ctl, fwupdate_t *fw, uint32_t caps, const uint8_t board_id[8],
                uint16_t boot_reason, link_tx_fn tx, void *tx_ctx);
 
 // Control-module event sink (pass to control_init with the link as ctx).

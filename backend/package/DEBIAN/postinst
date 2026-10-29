@@ -1,18 +1,44 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
-# Create system user and group for aerolink if they do not exist
-if ! getent group aerolink > /dev/null; then
-    groupadd --system aerolink
-fi
+if [ "$1" = "configure" ]; then
+    if ! getent group aerolink >/dev/null; then
+        addgroup --system aerolink
+    fi
+    if ! getent passwd aerolink >/dev/null; then
+        adduser --system --ingroup aerolink --no-create-home --home /var/lib/aerolink --shell /usr/sbin/nologin aerolink
+    fi
 
-if ! getent passwd aerolink > /dev/null; then
-    useradd --system --gid aerolink --no-create-home --shell /bin/false aerolink
-fi
+    # Secrets: readable by the service, not by everyone.
+    chown root:aerolink /etc/aerolink/aerolink.env
+    chmod 0640 /etc/aerolink/aerolink.env
+    install -d -m 0755 /var/www/letsencrypt
+    # Robot app releases (ROB-008): written by the admin, read by the service and by nginx.
+    install -d -m 0755 /var/lib/aerolink-apk
 
-# Reload systemd, enable the service on boot, and start it immediately
-systemctl daemon-reload
-systemctl enable aerolink.service
-systemctl start aerolink.service
+    systemctl daemon-reload
+    systemctl enable aerolink.socket aerolink.service aerolink-guard.socket aerolink-guard.service >/dev/null
+    # Socket activation: the services start on the first request / log line; restart them on upgrades.
+    systemctl start aerolink.socket aerolink-guard.socket
+    for unit in aerolink.service aerolink-guard.service; do
+        if systemctl is-active --quiet "$unit"; then
+            systemctl restart "$unit"
+        fi
+    done
+    if [ -L /etc/nginx/sites-enabled/aerolink ] && nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx || true
+    fi
+
+    if [ -z "$2" ]; then
+        cat <<'MSG'
+AeroLink installed. Next steps (docs/09-deployment.md):
+  1. set the domain, Telegram and TURN in /etc/aerolink/aerolink.env
+  2. set the domain in /etc/nginx/sites-available/aerolink, get a certificate, enable the site
+  3. sudo -u aerolink aerolink operator add <email> <name>
+     sudo -u aerolink aerolink robot add <name>
+  4. sudo -u aerolink aerolink telegram-test
+MSG
+    fi
+fi
 
 exit 0

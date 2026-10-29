@@ -1,4 +1,4 @@
-// USB link message set, protocol v1 (docs/03-usb-link.md "Messages").
+// USB link message set, protocol v2 (docs/03-usb-link.md "Messages").
 
 #pragma once
 
@@ -11,7 +11,12 @@
 #define MSG_DRIVE          0x04
 #define MSG_PING           0x05
 #define MSG_CONFIG         0x06
-#define MSG_REBOOT_BOOTSEL 0x07
+#define MSG_REBOOT         0x07
+// Firmware update (LINK-040..046); frozen across protocol versions together with HELLO/HELLO_ACK.
+#define MSG_FW_BEGIN       0x08
+#define MSG_FW_DATA        0x09
+#define MSG_FW_END         0x0A
+#define MSG_FW_CONFIRM     0x0B
 
 // Firmware -> phone
 #define MSG_HELLO_ACK 0x81
@@ -19,18 +24,26 @@
 #define MSG_EVENT     0x83
 #define MSG_NACK      0x84
 #define MSG_PONG      0x85
+#define MSG_FW_ACK    0x86
 
 // Payload lengths
 #define MSG_HELLO_LEN          1
 #define MSG_DRIVE_LEN          7
 #define MSG_CONFIG_LEN         8
-#define MSG_REBOOT_BOOTSEL_LEN 4
-#define MSG_HELLO_ACK_LEN      16
+#define MSG_REBOOT_LEN         5
+#define MSG_FW_BEGIN_LEN       8
+#define MSG_FW_DATA_MIN_LEN    5   // offset + at least one byte, up to PROTO_MAX_PAYLOAD
+#define MSG_HELLO_ACK_LEN      21
+#define MSG_FW_ACK_LEN         5
 #define MSG_TELEMETRY_LEN      13
 #define MSG_EVENT_LEN          3
 #define MSG_NACK_LEN           2
 
-#define REBOOT_BOOTSEL_MAGIC 0x544F4F42u  // "BOOT"
+#define REBOOT_MAGIC 0x544F4F42u  // "BOOT"
+
+// REBOOT mode
+#define REBOOT_NORMAL  0  // through the loader: installs a staged image
+#define REBOOT_BOOTSEL 1  // USB mass-storage boot (PC flashing)
 
 // state
 #define STATE_DISARMED 0
@@ -65,7 +78,7 @@
 // EVENT_BOOT arg
 #define BOOT_POWER_ON 0
 #define BOOT_WATCHDOG 1
-#define BOOT_BOOTSEL  2
+#define BOOT_REBOOT   2  // REBOOT from the phone (e.g. after an update)
 
 // NACK reason
 #define NACK_BAD_STATE    1

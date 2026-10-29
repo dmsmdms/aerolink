@@ -1,0 +1,5 @@
+/* No boot2 in the application: the loader's boot2 at the start of flash set up XIP already. */
+SECTIONS
+{
+    /DISCARD/ : { *(.boot2) }
+}

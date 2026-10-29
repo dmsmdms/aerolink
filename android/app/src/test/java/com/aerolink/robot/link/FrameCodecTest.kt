@@ -103,7 +103,13 @@ class FrameCodecTest {
             "drive_zero" to Command.Drive(0, 0, DriveSource.AUTOPILOT, 0),
             "ping" to Command.Ping,
             "config" to Command.Config(600, 1500, 200, 250),
-            "reboot_bootsel" to Command.RebootBootsel,
+            "reboot" to Command.Reboot(),
+            "reboot_bootsel" to Command.Reboot(bootsel = true),
+            "fw_begin" to Command.FwBegin(39936, 0x1C291CA3),
+            "fw_data" to Command.FwData(4096, ByteArray(56) { (it + 1).toByte() }),
+            "fw_data_last" to Command.FwData(39928, ByteArray(8)),
+            "fw_end" to Command.FwEnd,
+            "fw_confirm" to Command.FwConfirm,
         )
         for ((name, cmd) in cases) {
             val v = vector(name)
@@ -117,7 +123,9 @@ class FrameCodecTest {
         fun parse(name: String) = vector(name).let { Report.parse(Frame(it.type, it.seq, it.payload)) }
 
         assertEquals(
-            Report.HelloAck(1, "0.1.0", Caps.MOTOR_SIMULATED, 0xe66038b3cb3d2a2fUL.toLong()),
+            Report.HelloAck(
+                2, "0.1.0", Caps.MOTOR_SIMULATED, 0xe66038b3cb3d2a2fUL.toLong(), 0x1C291CA3, FirmwareBoot.TRIAL,
+            ),
             parse("hello_ack"),
         )
         assertEquals(
@@ -131,6 +139,8 @@ class FrameCodecTest {
         assertEquals(Report.Event(EventCode.STATE, RobotState.ARMED.code), parse("event_state"))
         assertEquals(Report.Nack(0x02, NackReason.FAULT_ACTIVE), parse("nack"))
         assertEquals(Report.Pong, parse("pong"))
+        assertEquals(Report.FwAck(4096, FwStatus.OK), parse("fw_ack"))
+        assertEquals(Report.FwAck(36864, FwStatus.BAD_OFFSET), parse("fw_ack_bad_offset"))
     }
 
     @Test

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PWR-014: Device Owner needs no extra admin policies; silent installs and permission grants come with it. -->
+<device-admin>
+    <uses-policies />
+</device-admin>

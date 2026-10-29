@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PROTO_VERSION 1
+#define PROTO_VERSION 2
 
 #define PROTO_MAX_FRAME   64                       // decoded: type + seq + payload + crc
 #define PROTO_MAX_PAYLOAD (PROTO_MAX_FRAME - 4)

@@ -1,0 +1,5 @@
+/* aerolink-boot: boot2 + loader below the boot record (rp2040/src/fwstore.h FW_LOADER_MAX). */
+MEMORY
+{
+    FLASH(rx) : ORIGIN = 0x10000000, LENGTH = 0xE000
+}

@@ -30,10 +30,18 @@ static void send_nack(link_t *l, uint8_t seq, uint8_t type, uint8_t reason) {
     send(l, MSG_NACK, seq, p, sizeof(p));
 }
 
-void link_init(link_t *l, control_t *ctl, uint32_t caps, const uint8_t board_id[8],
+static void send_fw_ack(link_t *l, uint8_t seq, uint32_t offset, uint8_t status) {
+    uint8_t p[MSG_FW_ACK_LEN];
+    proto_put_u32(p, offset);
+    p[4] = status;
+    send(l, MSG_FW_ACK, seq, p, sizeof(p));
+}
+
+void link_init(link_t *l, control_t *ctl, fwupdate_t *fw, uint32_t caps, const uint8_t board_id[8],
                uint16_t boot_reason, link_tx_fn tx, void *tx_ctx) {
     *l = (link_t){
         .ctl = ctl,
+        .fw = fw,
         .tx = tx,
         .tx_ctx = tx_ctx,
         .caps = caps,
@@ -56,6 +64,7 @@ void link_connected(link_t *l) {
 void link_disconnected(link_t *l) {
     l->connected = false;
     l->hello_done = false;
+    fwupdate_abort(l->fw);
     control_link_lost(l->ctl);  // SAFE-003
 }
 
@@ -64,10 +73,14 @@ static bool length_ok(uint8_t type, uint8_t len) {
     case MSG_HELLO: return len == MSG_HELLO_LEN;
     case MSG_DRIVE: return len == MSG_DRIVE_LEN;
     case MSG_CONFIG: return len == MSG_CONFIG_LEN;
-    case MSG_REBOOT_BOOTSEL: return len == MSG_REBOOT_BOOTSEL_LEN;
+    case MSG_REBOOT: return len == MSG_REBOOT_LEN;
+    case MSG_FW_BEGIN: return len == MSG_FW_BEGIN_LEN;
+    case MSG_FW_DATA: return len >= MSG_FW_DATA_MIN_LEN;
     case MSG_ARM:
     case MSG_DISARM:
-    case MSG_PING: return len == 0;
+    case MSG_PING:
+    case MSG_FW_END:
+    case MSG_FW_CONFIRM: return len == 0;
     default: return false;  // unknown type
     }
 }
@@ -80,10 +93,13 @@ static void handle(link_t *l, const proto_frame_t *f, uint32_t now_ms) {
     const uint8_t *p = f->payload;
     switch (f->type) {
     case MSG_HELLO: {
+        fwupdate_abort(l->fw);  // a new handshake: whatever transfer ran is gone
         uint8_t a[MSG_HELLO_ACK_LEN] = {PROTO_VERSION, AEROLINK_FW_VERSION_MAJOR,
                                         AEROLINK_FW_VERSION_MINOR, AEROLINK_FW_VERSION_PATCH};
         proto_put_u32(a + 4, l->caps);
         memcpy(a + 8, l->board_id, sizeof(l->board_id));
+        proto_put_u32(a + 16, l->fw->running.crc);
+        a[20] = l->fw->boot;
         send(l, MSG_HELLO_ACK, f->seq, a, sizeof(a));
         l->hello_done = true;
         if (!l->boot_reported) {
@@ -98,7 +114,8 @@ static void handle(link_t *l, const proto_frame_t *f, uint32_t now_ms) {
         break;
     }
     case MSG_ARM: {
-        uint8_t reason = l->hello_done ? control_arm(l->ctl, now_ms) : NACK_BAD_STATE;
+        // SAFE-007: no driving while an image is being received.
+        uint8_t reason = l->hello_done && !l->fw->active ? control_arm(l->ctl, now_ms) : NACK_BAD_STATE;
         if (reason) {
             send_nack(l, f->seq, f->type, reason);
         } else {
@@ -120,14 +137,39 @@ static void handle(link_t *l, const proto_frame_t *f, uint32_t now_ms) {
         control_config(l->ctl, proto_get_u16(p), proto_get_u16(p + 2), proto_get_u16(p + 4),
                        proto_get_u16(p + 6));
         break;
-    case MSG_REBOOT_BOOTSEL:
-        if (proto_get_u32(p) != REBOOT_BOOTSEL_MAGIC) {
+    case MSG_REBOOT:
+        if (proto_get_u32(p) != REBOOT_MAGIC || p[4] > REBOOT_BOOTSEL) {
             send_nack(l, f->seq, f->type, NACK_BAD_ARG);
         } else if (l->ctl->state != STATE_DISARMED) {
             send_nack(l, f->seq, f->type, NACK_BAD_STATE);
         } else {
-            l->bootsel_requested = true;
+            l->reboot_requested = true;
+            l->reboot_mode = p[4];
         }
+        break;
+    case MSG_FW_BEGIN: {
+        // LINK-040 / SAFE-007: only while DISARMED; ARM is refused from here until FW_END.
+        uint8_t status = l->ctl->state == STATE_DISARMED
+                             ? fwupdate_begin(l->fw, proto_get_u32(p), proto_get_u32(p + 4))
+                             : FW_BAD_STATE;
+        send_fw_ack(l, f->seq, 0, status);
+        break;
+    }
+    case MSG_FW_DATA: {
+        bool ack;
+        uint8_t status = fwupdate_data(l->fw, proto_get_u32(p), p + 4, (uint8_t)(f->len - 4), &ack);
+        if (status != FW_OK || ack) {
+            send_fw_ack(l, f->seq, l->fw->written, status);  // LINK-041
+        }
+        break;
+    }
+    case MSG_FW_END: {
+        uint8_t status = fwupdate_end(l->fw);
+        send_fw_ack(l, f->seq, l->fw->written, status);
+        break;
+    }
+    case MSG_FW_CONFIRM:
+        send_fw_ack(l, f->seq, 0, fwupdate_confirm(l->fw));
         break;
     }
 }

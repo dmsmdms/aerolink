@@ -1,0 +1,6 @@
+/etc/aerolink/aerolink.env
+/etc/nginx/sites-available/aerolink
+/etc/nginx/snippets/aerolink-headers.conf
+/etc/nginx/snippets/aerolink-proxy.conf
+/etc/nginx/snippets/aerolink-security-log.conf
+/etc/logrotate.d/aerolink

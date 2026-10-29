@@ -1,36 +1,22 @@
-// Host unit tests for the SDK-free firmware modules (proto, control, link).
+// Host unit tests for the SDK-free firmware modules (proto, control, link; firmware update in test_fw.c).
 // Usage: test_main <path to protocol/vectors.txt>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "check.h"
 #include "control.h"
+#include "crc32.h"
+#include "fake_flash.h"
 #include "link.h"
 #include "messages.h"
 #include "proto.h"
 
-static int failures;
-static int checks;
+int failures;
+int checks;
 
-#define CHECK(cond)                                                      \
-    do {                                                                 \
-        checks++;                                                        \
-        if (!(cond)) {                                                   \
-            failures++;                                                  \
-            fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
-        }                                                                \
-    } while (0)
-
-#define CHECK_EQ(a, b)                                                                   \
-    do {                                                                                 \
-        checks++;                                                                        \
-        long _a = (long)(a), _b = (long)(b);                                             \
-        if (_a != _b) {                                                                  \
-            failures++;                                                                  \
-            fprintf(stderr, "%s:%d: %s == %ld, expected %s == %ld\n", __FILE__, __LINE__, #a, _a, #b, _b); \
-        }                                                                                \
-    } while (0)
+void test_fw(void);  // test_fw.c
 
 // ---------------------------------------------------------------------------------------------
 // proto
@@ -375,6 +361,9 @@ static void phone_send(link_t *l, uint8_t type, uint8_t seq, const uint8_t *p, s
     link_rx(l, wire, n, now);
 }
 
+static fake_flash_t flash;
+static fwupdate_t fw;
+
 static void test_link(void) {
     static const uint8_t board_id[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     control_t c;
@@ -384,7 +373,9 @@ static void test_link(void) {
     motor_feedback_t fb = {.battery_mv = 36000, .speed_l = 10, .speed_r = 20, .temp_dc = TEMP_UNKNOWN};
     uint32_t now = 0;
 
-    link_init(&l, &c, CAP_MOTOR_SIMULATED, board_id, BOOT_WATCHDOG, sink_tx, &s);
+    fake_flash_init(&flash);
+    fwupdate_init(&fw, &flash.f, (fw_image_t){1000, 0xC0FFEE42});
+    link_init(&l, &c, &fw, CAP_MOTOR_SIMULATED, board_id, BOOT_WATCHDOG, sink_tx, &s);
     control_init(&c, now, link_on_control_event, &l);
     link_connected(&l);
 
@@ -406,6 +397,8 @@ static void test_link(void) {
         CHECK_EQ(s.frames[i].payload[0], PROTO_VERSION);
         CHECK_EQ(proto_get_u32(s.frames[i].payload + 4), CAP_MOTOR_SIMULATED);
         CHECK(memcmp(s.frames[i].payload + 8, board_id, 8) == 0);
+        CHECK_EQ(proto_get_u32(s.frames[i].payload + 16), 0xC0FFEE42);
+        CHECK_EQ(s.frames[i].payload[20], FW_BOOT_NORMAL);
     }
     i = sink_find(&s, MSG_EVENT);
     CHECK(i >= 0 && s.frames[i].payload[0] == EVENT_BOOT && proto_get_u16(s.frames[i].payload + 1) == BOOT_WATCHDOG);
@@ -461,13 +454,21 @@ static void test_link(void) {
     i = sink_find(&s, MSG_PONG);
     CHECK(i >= 0 && s.frames[i].seq == 77);
 
-    // REBOOT_BOOTSEL refused while armed, accepted when disarmed with the right magic.
-    uint8_t magic[4];
-    proto_put_u32(magic, REBOOT_BOOTSEL_MAGIC);
+    // REBOOT and FW_BEGIN refused while armed (SAFE-007).
+    uint8_t reboot[MSG_REBOOT_LEN] = {0, 0, 0, 0, REBOOT_NORMAL};
+    proto_put_u32(reboot, REBOOT_MAGIC);
     s.count = 0;
-    phone_send(&l, MSG_REBOOT_BOOTSEL, 80, magic, 4, now);
+    phone_send(&l, MSG_REBOOT, 80, reboot, sizeof(reboot), now);
     CHECK(sink_find(&s, MSG_NACK) >= 0);
-    CHECK(!l.bootsel_requested);
+    CHECK(!l.reboot_requested);
+    uint8_t begin[MSG_FW_BEGIN_LEN];
+    proto_put_u32(begin, 100);
+    proto_put_u32(begin + 4, 0);
+    s.count = 0;
+    phone_send(&l, MSG_FW_BEGIN, 81, begin, sizeof(begin), now);
+    i = sink_find(&s, MSG_FW_ACK);
+    CHECK(i >= 0 && s.frames[i].seq == 81 && s.frames[i].payload[4] == FW_BAD_STATE);
+    CHECK(!fw.active);
 
     // USB detach stops the robot (SAFE-003).
     link_disconnected(&l);
@@ -478,13 +479,97 @@ static void test_link(void) {
     CHECK_EQ(c.state, STATE_DISARMED);
 
     link_connected(&l);
-    phone_send(&l, MSG_HELLO, 81, hello, 1, now);
-    proto_put_u32(magic, 0x12345678);
-    phone_send(&l, MSG_REBOOT_BOOTSEL, 82, magic, 4, now);
-    CHECK(!l.bootsel_requested);
-    proto_put_u32(magic, REBOOT_BOOTSEL_MAGIC);
-    phone_send(&l, MSG_REBOOT_BOOTSEL, 83, magic, 4, now);
-    CHECK(l.bootsel_requested);
+    phone_send(&l, MSG_HELLO, 82, hello, 1, now);
+    proto_put_u32(reboot, 0x12345678);
+    phone_send(&l, MSG_REBOOT, 83, reboot, sizeof(reboot), now);
+    CHECK(!l.reboot_requested);
+    proto_put_u32(reboot, REBOOT_MAGIC);
+    reboot[4] = 2;  // unknown mode
+    phone_send(&l, MSG_REBOOT, 84, reboot, sizeof(reboot), now);
+    CHECK(!l.reboot_requested);
+    reboot[4] = REBOOT_BOOTSEL;
+    phone_send(&l, MSG_REBOOT, 85, reboot, sizeof(reboot), now);
+    CHECK(l.reboot_requested);
+    CHECK_EQ(l.reboot_mode, REBOOT_BOOTSEL);
+}
+
+// The update messages through the link: acknowledgements, ARM refused while updating, HELLO drops it.
+static void test_link_fw(void) {
+    static const uint8_t board_id[8] = {0};
+    static uint8_t image[5000];
+    control_t c;
+    link_t l;
+    sink_t s = {0};
+    proto_decoder_reset(&s.dec);
+    uint32_t now = 0;
+    fake_image(image, sizeof(image), 7);
+    fake_flash_pc_flash(&flash, image, sizeof(image));
+    fwupdate_init(&fw, &flash.f, (fw_image_t){sizeof(image), crc32_update(0, image, sizeof(image))});
+    link_init(&l, &c, &fw, 0, board_id, BOOT_POWER_ON, sink_tx, &s);
+    control_init(&c, now, link_on_control_event, &l);
+    link_connected(&l);
+    uint8_t hello[1] = {PROTO_VERSION};
+    phone_send(&l, MSG_HELLO, 1, hello, 1, now);
+
+    image[100] ^= 1;  // the "new" firmware
+    uint8_t begin[MSG_FW_BEGIN_LEN];
+    proto_put_u32(begin, sizeof(image));
+    proto_put_u32(begin + 4, crc32_update(0, image, sizeof(image)));
+    s.count = 0;
+    phone_send(&l, MSG_FW_BEGIN, 2, begin, sizeof(begin), now);
+    CHECK_EQ(s.count, 1);
+    CHECK(fw.active);
+    CHECK_EQ(s.frames[0].type, MSG_FW_ACK);
+    CHECK_EQ(s.frames[0].payload[4], FW_OK);
+
+    s.count = 0;
+    phone_send(&l, MSG_ARM, 3, NULL, 0, now);
+    CHECK_EQ(c.state, STATE_DISARMED);
+    CHECK(sink_find(&s, MSG_NACK) >= 0);
+
+    s.count = 0;
+    uint8_t data[PROTO_MAX_PAYLOAD];
+    for (uint32_t off = 0; off < sizeof(image); off += 56) {
+        uint32_t n = sizeof(image) - off < 56 ? sizeof(image) - off : 56;
+        proto_put_u32(data, off);
+        memcpy(data + 4, image + off, n);
+        phone_send(&l, MSG_FW_DATA, (uint8_t)off, data, 4 + n, now);
+    }
+    CHECK_EQ(s.count, 1);  // one sector complete
+    CHECK_EQ(proto_get_u32(s.frames[0].payload), FW_SECTOR);
+    CHECK_EQ(s.frames[0].payload[4], FW_OK);
+
+    s.count = 0;
+    phone_send(&l, MSG_FW_END, 9, NULL, 0, now);
+    CHECK_EQ(s.count, 1);
+    CHECK_EQ(s.frames[0].seq, 9);
+    CHECK_EQ(proto_get_u32(s.frames[0].payload), sizeof(image));
+    CHECK_EQ(s.frames[0].payload[4], FW_OK);
+    CHECK(fw.staged);
+
+    // FW_END ends the update lock; the staged image stays for the next boot.
+    phone_send(&l, MSG_ARM, 11, NULL, 0, now);
+    CHECK_EQ(c.state, STATE_ARMED);
+    fw_record_t r;
+    fw_record_read(&flash.f, &r);
+    CHECK_EQ(r.state, FW_STATE_STAGED);
+
+    // A new handshake drops an unfinished transfer.
+    phone_send(&l, MSG_DISARM, 13, NULL, 0, now);
+    for (int k = 0; k < 40; k++) {
+        now += 10;
+        control_tick(&c, now);
+    }
+    phone_send(&l, MSG_FW_BEGIN, 14, begin, sizeof(begin), now);
+    CHECK(fw.active);
+    phone_send(&l, MSG_HELLO, 15, hello, 1, now);
+    CHECK(!fw.active);
+
+    // FW_CONFIRM on a normal boot is a no-op with an OK.
+    s.count = 0;
+    phone_send(&l, MSG_FW_CONFIRM, 12, NULL, 0, now);
+    int i = sink_find(&s, MSG_FW_ACK);
+    CHECK(i >= 0 && s.frames[i].payload[4] == FW_OK);
 }
 
 int main(int argc, char **argv) {
@@ -502,6 +587,8 @@ int main(int argc, char **argv) {
     test_control_link_lost_and_fault();
     test_control_time_wrap();
     test_link();
+    test_link_fw();
+    test_fw();
 
     if (failures) {
         fprintf(stderr, "❌ %d of %d checks failed\n", failures, checks);

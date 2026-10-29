@@ -1,7 +1,12 @@
 Package: aerolink
 Version: 0.1.0
-Section: utils
+Section: net
 Priority: optional
 Architecture: amd64
+Depends: nginx (>= 1.25.1), libnginx-mod-http-brotli-static, nftables (>= 1.0.8), adduser
+Recommends: coturn
+Suggests: bash-completion
 Maintainer: AeroLink Team <admin@aerolink.local>
-Description: AeroLink delivery robot teleoperation backend
+Description: AeroLink delivery robot teleoperation server
+ Signaling backend (operators, robot registry, WebRTC signaling), operator console static files,
+ nginx site with abuse filtering, firewall guard (nftables bans) and systemd units.

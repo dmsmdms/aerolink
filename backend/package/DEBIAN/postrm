@@ -1,16 +1,25 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
-# If the package is being completely purged, remove the system user and group
 if [ "$1" = "purge" ]; then
-    if getent passwd aerolink > /dev/null; then
-        userdel aerolink || true
+    # Data and logs go only on purge; the database holds operators and robot tokens.
+    rm -rf /var/lib/aerolink /var/lib/aerolink-apk /var/log/aerolink
+    if getent passwd aerolink >/dev/null; then
+        deluser --system aerolink >/dev/null || true
     fi
-    if getent group aerolink > /dev/null; then
-        groupdel aerolink || true
+    if getent group aerolink >/dev/null; then
+        delgroup --system aerolink >/dev/null || true
+    fi
+    rm -f /etc/nginx/sites-enabled/aerolink
+fi
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    # Lift all bans with the guard gone.
+    if command -v nft >/dev/null; then
+        nft delete table inet aerolink_guard 2>/dev/null || true
     fi
 fi
 
-systemctl daemon-reload >/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
 
 exit 0

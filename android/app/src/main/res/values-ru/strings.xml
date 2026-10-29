@@ -1,4 +1,95 @@
 <resources>
     <string name="app_name">AeroLink Robot</string>
-    <string name="version">Версия %1$s</string>
+    <string name="version">AeroLink Robot %1$s</string>
+    <string name="unknown">неизвестно</string>
+
+    <string name="notification_channel">Служба робота</string>
+    <string name="notification_title">Робот работает</string>
+    <string name="notification_session">Сеанс оператора: камера и микрофон включены</string>
+
+    <string name="section_server">Сервер</string>
+    <string name="server_not_configured">Не настроено: укажите адрес сервера и токен робота</string>
+    <string name="server_connecting">Подключение…</string>
+    <string name="server_online">На связи</string>
+    <string name="server_offline">Нет связи, повтор (%1$s)</string>
+    <string name="server_unauthorized">Токен робота отклонён (неверный, заменён или робот отключён)</string>
+    <string name="label_server_url">Адрес сервера</string>
+    <string name="label_robot_token">Токен робота</string>
+    <string name="simulate_base">Симулятор базы, когда настоящая не подключена (стенд)</string>
+    <string name="label_video_rotation">Поворот видео (0° = телефон вертикально; со следующей сессии)</string>
+    <string name="button_save">Сохранить</string>
+    <string name="session_none">Оператора нет</string>
+    <string name="session_operator">Оператор %1$s: %2$s</string>
+    <string name="peer_waiting">ожидание консоли</string>
+    <string name="peer_connecting">подключение…</string>
+    <string name="peer_connected">подключено</string>
+    <string name="peer_disconnected">связь прервалась</string>
+    <string name="peer_failed">не удалось подключиться</string>
+    <string name="peer_closed">закрыто</string>
+
+    <string name="section_link">База робота (USB)</string>
+    <string name="no_link">База робота не подключена</string>
+    <string name="phase_handshake">Подключение…</string>
+    <string name="phase_ready">Подключено</string>
+    <string name="phase_incompatible">Несовместимый протокол прошивки, езда запрещена</string>
+    <string name="phase_no_response">База робота не отвечает</string>
+    <string name="phase_closed">Отключено</string>
+
+    <string name="label_firmware">Прошивка %1$s (образ %3$08X), протокол %2$d</string>
+    <string name="firmware_no_base">Обновление прошивки: платформа не отвечает</string>
+    <string name="firmware_no_image">Обновление прошивки: в этой сборке нет образа прошивки</string>
+    <string name="firmware_current">Обновление прошивки: на платформе прошивка этого приложения</string>
+    <string name="firmware_waiting">Обновление прошивки: ждём конца сеанса оператора и отключения моторов</string>
+    <string name="firmware_sending">Обновление прошивки: передача, %1$d %%</string>
+    <string name="firmware_installing">Обновление прошивки: платформа перезапускается и устанавливает её</string>
+    <string name="firmware_failed">Обновление прошивки не удалось: %1$s</string>
+    <string name="label_board">Плата %1$s</string>
+    <string name="label_motor">Драйвер моторов: %1$s</string>
+    <string name="motor_simulated">симулятор</string>
+    <string name="motor_hardware">реальный</string>
+
+    <string name="label_state">Состояние: %1$s</string>
+    <string name="state_disarmed">разоружён</string>
+    <string name="state_armed">готов к езде</string>
+    <string name="state_stopping">остановка</string>
+    <string name="state_fault">авария</string>
+
+    <string name="label_faults">Неисправности: %1$s</string>
+    <string name="faults_none">нет</string>
+    <string name="fault_motor_link_lost">нет связи с контроллером моторов</string>
+    <string name="fault_motor">ошибка моторов</string>
+    <string name="fault_low_battery">низкий заряд</string>
+    <string name="fault_overtemp">перегрев</string>
+
+    <string name="label_wheels">Колёса Л / П: %1$d / %2$d ‰</string>
+    <string name="label_robot_battery">Батарея робота: %1$s</string>
+    <string name="volts">%1$.1f В</string>
+    <string name="label_errors">Ошибки приёма: база %1$d, телефон %2$d</string>
+    <string name="label_nack">Команда 0x%1$02X отклонена, причина %2$d</string>
+
+    <string name="button_arm">Включить</string>
+    <string name="button_disarm">Выключить</string>
+    <string name="joystick_hint">Локальный джойстик (работает во включённом состоянии)</string>
+
+    <string name="section_phone">Батарея телефона</string>
+    <string name="label_phone_battery">%1$d %%, %2$.1f °C, %3$s</string>
+    <string name="plugged">питание есть</string>
+    <string name="unplugged">без питания</string>
+    <string name="charge_probing">Управление зарядом: проверка root…</string>
+    <string name="charge_unavailable">Управление зарядом: недоступно (нет root), телефон заряжается без ограничений</string>
+    <string name="charge_active">Управление зарядом: %1$s, зарядка %2$s</string>
+    <string name="charge_allowed">разрешена</string>
+    <string name="charge_paused">приостановлена</string>
+
+    <string name="section_app">Приложение</string>
+    <string name="label_app_version">Версия %1$s (%2$d)</string>
+    <string name="update_current">Обновления: установлена последняя версия</string>
+    <string name="update_blocked">Есть обновление %1$s, но установка требует подтверждения на экране: сделайте приложение Device Owner (или на Android 12+ разрешите ему установку неизвестных приложений)</string>
+    <string name="update_waiting">Обновление %1$s: ждёт окончания сеанса оператора</string>
+    <string name="update_downloading">Обновление %1$s: загрузка, %2$d %%</string>
+    <string name="update_installing">Обновление %1$s: установка, приложение перезапустится</string>
+    <string name="update_failed">Обновление %1$s не удалось: %2$s</string>
+    <string name="device_owner_yes">Device Owner: да (тихие обновления и разрешения)</string>
+    <string name="device_owner_no">Device Owner: нет</string>
+    <string name="button_release_owner">Снять Device Owner</string>
 </resources>

@@ -1,0 +1,10 @@
+# The backend opens the error log per write, so no signal or copytruncate is needed.
+/var/log/aerolink/*.log {
+	weekly
+	rotate 12
+	missingok
+	notifempty
+	compress
+	delaycompress
+	create 0640 aerolink aerolink
+}

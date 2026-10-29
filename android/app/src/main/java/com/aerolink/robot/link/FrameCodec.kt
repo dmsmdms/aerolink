@@ -3,7 +3,7 @@ package com.aerolink.robot.link
 // USB link framing (docs/03-usb-link.md, LINK-010..013): COBS + CRC-16/CCITT-FALSE,
 // 0x00-delimited. Must stay byte-compatible with rp2040/src/proto.c (shared protocol/vectors.txt).
 
-const val PROTOCOL_VERSION = 1
+const val PROTOCOL_VERSION = 2
 const val MAX_FRAME = 64
 const val MAX_PAYLOAD = MAX_FRAME - 4
 private const val MAX_ENCODED = MAX_FRAME + 1

@@ -1,0 +1,61 @@
+# bash completion for aerolink (backend/src/main.rs; `aerolink completion bash` prints this file).
+# Robot ids and operator e-mails come from `aerolink robot|operator list`, which needs read access to the
+# database: they complete for root and the aerolink user, and silently not for anyone else.
+
+_aerolink() {
+    local cur prev words cword
+    if declare -F _init_completion > /dev/null; then
+        _init_completion || return
+    else
+        cur=${COMP_WORDS[COMP_CWORD]}
+        words=("${COMP_WORDS[@]}")
+        cword=$COMP_CWORD
+    fi
+
+    local commands="serve operator robot guard telegram-test completion version help"
+    local cmd=${words[1]} sub=${words[2]}
+
+    if ((cword == 1)); then
+        COMPREPLY=($(compgen -W "$commands --help --version" -- "$cur"))
+        return
+    fi
+    if [[ $cur == -* ]]; then
+        COMPREPLY=($(compgen -W "--help" -- "$cur"))
+        return
+    fi
+
+    case $cmd in
+        help)
+            ((cword == 2)) && COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            ;;
+        completion)
+            ((cword == 2)) && COMPREPLY=($(compgen -W "bash" -- "$cur"))
+            ;;
+        operator)
+            if ((cword == 2)); then
+                COMPREPLY=($(compgen -W "add passwd disable enable list" -- "$cur"))
+            elif ((cword == 3)) && [[ $sub == @(passwd|disable|enable) ]]; then
+                COMPREPLY=($(compgen -W "$("${words[0]}" operator list 2> /dev/null | cut -f2)" -- "$cur"))
+            fi
+            ;;
+        robot)
+            if ((cword == 2)); then
+                COMPREPLY=($(compgen -W "add token disable enable list" -- "$cur"))
+            elif ((cword == 3)) && [[ $sub == @(token|disable|enable) ]]; then
+                COMPREPLY=($(compgen -W "$("${words[0]}" robot list 2> /dev/null | cut -f1)" -- "$cur"))
+            fi
+            ;;
+        guard)
+            if ((cword == 2)); then
+                COMPREPLY=($(compgen -W "serve list unban" -- "$cur"))
+            elif ((cword == 3)) && [[ $sub == unban ]]; then
+                local banned
+                banned=$("${words[0]}" guard list 2> /dev/null |
+                    grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]+)?|[0-9a-fA-F]*:[0-9a-fA-F:]+(/[0-9]+)?' | sort -u)
+                COMPREPLY=($(compgen -W "$banned" -- "$cur"))
+            fi
+            ;;
+    esac
+}
+
+complete -F _aerolink aerolink

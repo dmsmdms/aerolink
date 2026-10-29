@@ -24,10 +24,15 @@ cmake -S "$FW_DIR" -B "$FW_BUILD" -G Ninja \
 cmake --build "$FW_BUILD"
 
 UF2_SOURCE="$FW_BUILD/aerolink.uf2"
-if [ -f "$UF2_SOURCE" ]; then
-    cp "$UF2_SOURCE" "$OUT_DIR/aerolink-rp2040.uf2"
-    echo "✅ Firmware successfully placed to build/aerolink-rp2040.uf2"
-else
-    echo "❌ Error: UF2 file not found!"
+BIN_SOURCE="$FW_BUILD/aerolink.bin"
+if [ ! -f "$UF2_SOURCE" ] || [ ! -f "$BIN_SOURCE" ]; then
+    echo "❌ Error: UF2/BIN file not found!"
     exit 1
 fi
+# aerolink-rp2040.uf2: loader + application, for PC flashing (`make flash`).
+cp "$UF2_SOURCE" "$OUT_DIR/aerolink-rp2040.uf2"
+# aerolink-rp2040.bin: the application alone, as the phone installs it (ROB-009); `make android` ships it in the APK.
+cp "$BIN_SOURCE" "$OUT_DIR/aerolink-rp2040.bin"
+mkdir -p "$OUT_DIR/android-assets/firmware"
+cp "$BIN_SOURCE" "$OUT_DIR/android-assets/firmware/aerolink-rp2040.bin"
+echo "✅ Firmware successfully placed to build/aerolink-rp2040.uf2 (PC) and build/aerolink-rp2040.bin (phone updates)"

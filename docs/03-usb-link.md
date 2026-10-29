@@ -17,6 +17,11 @@ the firmware and Android codecs are both tested against it.
 - `LINK-003` The Android app declares an `accessory_filter.xml` matching manufacturer/model, so the system
   starts it on attach. The "use by default" choice is made once during robot provisioning.
 - `LINK-004` VBUS for the phone comes from the robot 5 V rail (see [04](04-power.md)).
+- `LINK-005` Host → phone bulk transfers are at most 63 bytes, so each ends with a short packet: Android's
+  accessory gadget completes a read only on a short packet or a full 16 KiB buffer.
+- `LINK-006` Failed GET_PROTOCOL (non-Android device, protocol 0) → the device is ignored until re-attached.
+  A failed bulk IN transfer is not retried (a stalled endpoint would spin); the phone's command timeout stops
+  the robot and a re-attach recovers the link.
 
 ## Framing
 
@@ -52,14 +57,22 @@ sensors — announced via `caps`).
 | 0x04 | P→F | DRIVE | `speed:i16` ‰ of max (−1000..1000, + forward), `steer:i16` ‰ (−1000..1000, + right), `source:u8`, `ttl_ms:u16` | 7 |
 | 0x05 | P→F | PING | — | 0 |
 | 0x06 | P→F | CONFIG | `max_speed:u16` ‰, `accel:u16` ‰/s, `telemetry_period_ms:u16` (0 = events only), `cmd_timeout_ms:u16` | 8 |
-| 0x07 | P→F | REBOOT_BOOTSEL | `magic:u32` = `0x544F4F42` ("BOOT") | 4 |
-| 0x81 | F→P | HELLO_ACK | `proto_version:u8`, `fw_major:u8`, `fw_minor:u8`, `fw_patch:u8`, `caps:u32`, `board_id:8×u8` | 16 |
+| 0x07 | P→F | REBOOT | `magic:u32` = `0x544F4F42` ("BOOT"), `mode:u8` (0 through the loader, 1 BOOTSEL) | 5 |
+| 0x08 | P→F | FW_BEGIN | `size:u32`, `crc32:u32` of the image | 8 |
+| 0x09 | P→F | FW_DATA | `offset:u32`, `data` (1..56 bytes) | 5..60 |
+| 0x0A | P→F | FW_END | — | 0 |
+| 0x0B | P→F | FW_CONFIRM | — (the running image works) | 0 |
+| 0x81 | F→P | HELLO_ACK | `proto_version:u8`, `fw_major:u8`, `fw_minor:u8`, `fw_patch:u8`, `caps:u32`, `board_id:8×u8`, `fw_crc32:u32`, `boot:u8` | 21 |
 | 0x82 | F→P | TELEMETRY | `state:u8`, `faults:u16`, `battery_mv:u16`, `speed_l:i16` ‰, `speed_r:i16` ‰, `temp_dc:i16` (0.1 °C), `rx_errors:u16` | 13 |
 | 0x83 | F→P | EVENT | `code:u8`, `arg:u16` | 3 |
 | 0x84 | F→P | NACK | `rejected_type:u8`, `reason:u8` | 2 |
 | 0x85 | F→P | PONG | — | 0 |
+| 0x86 | F→P | FW_ACK | `offset:u32` (bytes of the image durably in flash), `status:u8` | 5 |
 
-Unknown values: `battery_mv = 0`, `temp_dc = −32768`.
+Unknown values: `battery_mv = 0`, `temp_dc = −32768`. HELLO, HELLO_ACK, REBOOT and the FW_* messages are frozen
+across protocol versions (HELLO_ACK may only grow at the end): any app can update any firmware, including one
+whose protocol it otherwise refuses (`LINK-030`). `fw_crc32` is the CRC-32 (IEEE, as zlib) of the running
+application image, `boot`: 0 normal, 1 trial (a new image waiting for FW_CONFIRM), 2 rolled back.
 
 ### Enumerations
 
@@ -72,7 +85,7 @@ Unknown values: `battery_mv = 0`, `temp_dc = −32768`.
 
 | `faults` bit | | EVENT `code` | `arg` | NACK `reason` | |
 |---|---|---|---|---|---|
-| 0 | MOTOR_LINK_LOST | 1 BOOT | reset reason (0 power-on, 1 watchdog, 2 bootsel) | 1 | BAD_STATE |
+| 0 | MOTOR_LINK_LOST | 1 BOOT | reset reason (0 power-on, 1 watchdog, 2 REBOOT) | 1 | BAD_STATE |
 | 1 | MOTOR_FAULT | 2 STATE | new `state` | 2 | BAD_ARG |
 | 2 | LOW_BATTERY | 3 FAULTS | new `faults` | 3 | FAULT_ACTIVE |
 | 3 | OVERTEMP | 4 CMD_TIMEOUT | — | | |
@@ -86,10 +99,69 @@ Unknown values: `battery_mv = 0`, `temp_dc = −32768`.
 - `LINK-032` DRIVE is accepted only in ARMED (otherwise silently dropped — no NACK flood at 20 Hz). Values out
   of range are clamped. A DRIVE is valid for `min(ttl_ms, cmd_timeout_ms)`.
 - `LINK-033` CONFIG may arrive in any state; values are clamped to the firmware maxima ([05](05-safety.md)).
-- `LINK-034` REBOOT_BOOTSEL is accepted only in DISARMED with the correct magic.
+- `LINK-034` REBOOT is accepted only in DISARMED with the correct magic and a known mode (otherwise NACK).
 
 ## Traffic budget
 
 - `LINK-020` **DISARMED: zero periodic traffic.** Only EVENT frames on change (fault, state).
 - `LINK-021` **ARMED:** DRIVE at 20 Hz from the phone, TELEMETRY at `telemetry_period_ms` (default 200 ms).
 - `LINK-022` The phone never polls USB: one coroutine blocks on a bulk read; no timers in the read path.
+
+## Firmware update over the link
+
+The phone updates the RP2040 over this link, so a robot in the field never needs a PC (`ROB-009`). The firmware
+image ships inside the APK, so `ROB-008` app updates deliver the firmware too: one release, one channel.
+Recovery when everything else fails stays the ROM BOOTSEL mode (button + PC), which nothing can overwrite.
+
+### Flash layout (fits a 2 MB part; the robot's board has 16 MB)
+
+| Offset | Size | Contents |
+|--------|------|----------|
+| `0x000000` | 56 KB | **loader** (`boot2` + `aerolink-boot`, ~9 KB): flashed only with a PC (`make flash`), never over the link |
+| `0x00E000` | 2 × 4 KB | **boot record**, written alternately (newest valid sequence number wins): state (`NONE`, `STAGED`, `COPYING`, `TRIAL`), unconfirmed boots, flags, size and CRC-32 of the active, staging and backup images |
+| `0x010000` | 512 KB | **active** slot: the application, linked to run here |
+| `0x090000` | 512 KB | **staging** slot: the new image as received from the phone |
+| `0x110000` | 512 KB | **backup** slot: the previous image, for rollback |
+
+The application is ~40 KB; 512 KB slots leave room for the real motor driver and peripherals. A PC flash
+(`aerolink-rp2040.uf2`) writes the loader, an erased boot record and the application, so it also clears any
+update state left on the board.
+
+### Behaviour
+
+- `LINK-040` FW_BEGIN is accepted only in DISARMED (`SAFE-007`) and not while the running image is on trial
+  (`boot = 1`: it must not become the backup unconfirmed); from then until FW_END, HELLO or USB detach the
+  firmware refuses ARM. Answer: FW_ACK `offset 0`.
+- `LINK-041` FW_DATA must continue at the bytes received so far, or restart at the last acknowledged offset;
+  anything else gets FW_ACK `bad offset` with the acknowledged offset, and the phone resends from there. The
+  firmware fills a 4 KB RAM buffer, erases one staging sector and programs it, then answers FW_ACK with the new
+  offset. The phone sends one sector and waits for that FW_ACK (3 s); the last, partial sector is written by FW_END.
+- `LINK-042` FW_END: the firmware writes what is left, checks the staging slot's CRC-32 against FW_BEGIN, writes the
+  boot record `STAGED` (with the running image as the active one) and answers FW_ACK with the image size. ARM
+  is allowed again; the image is installed whenever the board restarts next. The phone sends REBOOT mode 0 once
+  no operator session runs.
+- `LINK-043` The loader on `STAGED`: checks the staging CRC, copies active → backup (record `COPYING`), then staging
+  → active (record `TRIAL`), each copy CRC-checked, and starts the new image. A power cut at any point repeats
+  the step on the next boot: the source of each copy stays intact until the record moves on, and a torn record
+  write leaves the previous record in force.
+- `LINK-044` `TRIAL`: the loader counts the boots in the record. The phone sends FW_CONFIRM as soon as the new image
+  answered HELLO (USB and the link work, so it can be updated again); the record goes back to `NONE`. After 3
+  unconfirmed boots, or at once if the image does not even look like a program (initial SP and reset vector),
+  the loader copies backup → active and starts the old image, which reports `boot = 2` until confirmed.
+- `LINK-045` A normal boot checks the active image against the record: a damaged one is restored from the backup;
+  with no good backup, or no application at all, the loader enters BOOTSEL so a PC can flash it.
+- `LINK-046` Flash erase/program run with interrupts off (the code in flash cannot run meanwhile); a sector erase
+  can take up to 400 ms, so the watchdog is widened to 1 s around each operation and set back to 100 ms after it
+  (2 s in the loader). Motors are at zero throughout (DISARMED); the main loop does not run during an operation.
+
+### Build and tests
+
+- `make rp2040` builds `aerolink-boot` (`rp2040/boot/`) and the application (linked at `0x10010000`, no boot2:
+  `rp2040/ld/`) and outputs `aerolink-rp2040.uf2` (loader + record + application, `tools/fw_image.py`, for
+  `make flash`) and `aerolink-rp2040.bin` (the application, as the phone installs it). `make android` ships the
+  `.bin` in the APK (`assets/firmware/`); release builds require it.
+- `crc32`, `fwstore` (record, loader decisions) and `fwupdate` (receiver) are SDK-free and host-tested against a
+  RAM "flash" that behaves like NOR (program only clears bits), with a power cut injected after every single
+  flash operation of an install, a transfer and a rollback.
+- Android: `RobotLink.flashFirmware` / `confirmFirmware` / `reboot`, `FirmwareUpdater` (`ROB-009`); JVM tests
+  against a fake base and `SimulatedBase`, which takes updates like the firmware (bench tests on the Pixel).

@@ -1,4 +1,95 @@
 <resources>
     <string name="app_name">AeroLink Robot</string>
-    <string name="version">Version %1$s</string>
+    <string name="version">AeroLink Robot %1$s</string>
+    <string name="unknown">unknown</string>
+
+    <string name="notification_channel">Robot service</string>
+    <string name="notification_title">Robot is running</string>
+    <string name="notification_session">Operator session: camera and microphone on</string>
+
+    <string name="section_server">Server</string>
+    <string name="server_not_configured">Not configured: enter the server address and the robot token</string>
+    <string name="server_connecting">Connecting…</string>
+    <string name="server_online">Online</string>
+    <string name="server_offline">Offline, retrying (%1$s)</string>
+    <string name="server_unauthorized">Robot token rejected (wrong, replaced or robot disabled)</string>
+    <string name="label_server_url">Server address</string>
+    <string name="label_robot_token">Robot token</string>
+    <string name="simulate_base">Simulated robot base when none is connected (bench)</string>
+    <string name="label_video_rotation">Video rotation (0° = phone upright; applies from the next session)</string>
+    <string name="button_save">Save</string>
+    <string name="session_none">No operator</string>
+    <string name="session_operator">Operator %1$s: %2$s</string>
+    <string name="peer_waiting">waiting for the console</string>
+    <string name="peer_connecting">connecting…</string>
+    <string name="peer_connected">connected</string>
+    <string name="peer_disconnected">connection interrupted</string>
+    <string name="peer_failed">connection failed</string>
+    <string name="peer_closed">closed</string>
+
+    <string name="section_link">Robot base (USB)</string>
+    <string name="no_link">Robot base not connected</string>
+    <string name="phase_handshake">Connecting…</string>
+    <string name="phase_ready">Connected</string>
+    <string name="phase_incompatible">Incompatible firmware protocol, driving disabled</string>
+    <string name="phase_no_response">Robot base does not answer</string>
+    <string name="phase_closed">Disconnected</string>
+
+    <string name="label_firmware">Firmware %1$s (image %3$08X), protocol %2$d</string>
+    <string name="firmware_no_base">Firmware updates: the robot base does not answer</string>
+    <string name="firmware_no_image">Firmware updates: this build carries no firmware image</string>
+    <string name="firmware_current">Firmware updates: the base runs the firmware of this app</string>
+    <string name="firmware_waiting">Firmware update: waiting for the operator session to end and the base to be disarmed</string>
+    <string name="firmware_sending">Firmware update: sending, %1$d %%</string>
+    <string name="firmware_installing">Firmware update: the robot base restarts and installs it</string>
+    <string name="firmware_failed">Firmware update failed: %1$s</string>
+    <string name="label_board">Board %1$s</string>
+    <string name="label_motor">Motor driver: %1$s</string>
+    <string name="motor_simulated">simulated</string>
+    <string name="motor_hardware">hardware</string>
+
+    <string name="label_state">State: %1$s</string>
+    <string name="state_disarmed">disarmed</string>
+    <string name="state_armed">armed</string>
+    <string name="state_stopping">stopping</string>
+    <string name="state_fault">fault</string>
+
+    <string name="label_faults">Faults: %1$s</string>
+    <string name="faults_none">none</string>
+    <string name="fault_motor_link_lost">motor controller link lost</string>
+    <string name="fault_motor">motor fault</string>
+    <string name="fault_low_battery">low battery</string>
+    <string name="fault_overtemp">overheating</string>
+
+    <string name="label_wheels">Wheels L / R: %1$d / %2$d ‰</string>
+    <string name="label_robot_battery">Robot battery: %1$s</string>
+    <string name="volts">%1$.1f V</string>
+    <string name="label_errors">Receive errors: base %1$d, phone %2$d</string>
+    <string name="label_nack">Command 0x%1$02X rejected, reason %2$d</string>
+
+    <string name="button_arm">Arm</string>
+    <string name="button_disarm">Disarm</string>
+    <string name="joystick_hint">Local joystick (works when armed)</string>
+
+    <string name="section_phone">Phone battery</string>
+    <string name="label_phone_battery">%1$d %%, %2$.1f °C, %3$s</string>
+    <string name="plugged">powered</string>
+    <string name="unplugged">not powered</string>
+    <string name="charge_probing">Charge control: checking root…</string>
+    <string name="charge_unavailable">Charge control: unavailable (no root), the phone charges freely</string>
+    <string name="charge_active">Charge control: %1$s, charging %2$s</string>
+    <string name="charge_allowed">allowed</string>
+    <string name="charge_paused">paused</string>
+
+    <string name="section_app">App</string>
+    <string name="label_app_version">Version %1$s (%2$d)</string>
+    <string name="update_current">Updates: up to date</string>
+    <string name="update_blocked">Update %1$s available, but it needs a confirmation on the screen: make the app Device Owner (or allow it to install unknown apps on Android 12+)</string>
+    <string name="update_waiting">Update %1$s: waiting for the operator session to end</string>
+    <string name="update_downloading">Update %1$s: downloading, %2$d %%</string>
+    <string name="update_installing">Update %1$s: installing, the app restarts</string>
+    <string name="update_failed">Update %1$s failed: %2$s</string>
+    <string name="device_owner_yes">Device Owner: yes (silent updates and permissions)</string>
+    <string name="device_owner_no">Device Owner: no</string>
+    <string name="button_release_owner">Remove Device Owner</string>
 </resources>

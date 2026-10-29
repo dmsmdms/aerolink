@@ -1,0 +1,15 @@
+# nginx sends its security log here as syslog datagrams (snippets/aerolink-security-log.conf). systemd
+# owns the socket, so nginx can always write and the guard starts on the first line
+# (docs/09-deployment.md OPS-013).
+[Unit]
+Description=AeroLink guard socket (nginx security log)
+
+[Socket]
+ListenDatagram=/run/aerolink-guard.sock
+SocketUser=aerolink
+SocketGroup=www-data
+SocketMode=0660
+ReceiveBuffer=1M
+
+[Install]
+WantedBy=sockets.target

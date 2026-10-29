@@ -1,0 +1,60 @@
+[Unit]
+Description=AeroLink teleoperation backend
+Documentation=file:///usr/share/doc/aerolink/
+Requires=aerolink.socket
+After=network-online.target aerolink.socket
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/aerolink serve
+# Re-reads the robot app release in /var/lib/aerolink-apk and announces it to robots (ROB-008).
+ExecReload=/bin/kill -HUP $MAINPID
+Environment=AEROLINK_LISTEN=systemd
+# nginx sends the APKs (internal location in sites-available/aerolink).
+Environment=AEROLINK_APK_ACCEL=/_apk/
+User=aerolink
+Group=aerolink
+StateDirectory=aerolink
+StateDirectoryMode=0750
+LogsDirectory=aerolink
+LogsDirectoryMode=0750
+Restart=on-failure
+RestartSec=2s
+UMask=0027
+
+# Resource caps: one thread, a few MiB of RSS in practice.
+MemoryMax=256M
+TasksMax=8
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
