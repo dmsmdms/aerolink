@@ -19,6 +19,7 @@ and `frontend/package-lock.json`) and the Rust crates (`backend/Cargo.lock`).
 | End-to-end test (`make e2e`) | `chromium`; everything for frontend, backend and Android | Node ≥ 22 (trixie has 20: use a newer Node and put it first in `PATH`) |
 | Bench server (`make bench-server`) | as for frontend + backend; `adb`, `coturn` for `BENCH_USB=1` | |
 | App icons (one-off, from `docs/logo/`) | `python3-pil` | |
+| Hoverboard reflashing (`tools/hoverboard_swd.sh`, [11](11-hoverboard.md)) | `openocd`, `gcc-arm-none-eabi`, `libnewlib-arm-none-eabi`, `make`, `git`, `picotool` | debugprobe UF2, Gen2.x firmware + GD32 SPL (cloned outside the repo) |
 
 SQLite is compiled into the backend (`rusqlite` bundled), so no `libsqlite3-dev` is needed.
 
