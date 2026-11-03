@@ -13,7 +13,7 @@ diagnostics screen with a local joystick. Next: bench test on the SM-J710F, powe
 
 1. Finalize [03](03-usb-link.md); `protocol/vectors.txt` with reference frames.
 2. Firmware: TinyUSB host + AOA handshake, COBS/CRC framing, state machine and failsafes ([05](05-safety.md)),
-   hoverboard driver, status LED, UART0 debug log, unit tests for the codec on the host PC.
+   hoverboard driver, status LED, debug log (UART0, RTT with the hoverboard driver), unit tests for the codec on the host PC.
 3. Android: `RobotLinkService` (foreground, `connectedDevice`), `UsbAccessory` transport, codec + tests
    against the same vectors, link state machine, diagnostics screen with a local joystick.
 4. Power baseline measurements (`PWR-015`).

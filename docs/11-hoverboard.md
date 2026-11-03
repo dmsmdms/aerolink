@@ -37,13 +37,17 @@ half-bridge on and short the battery, so match the layout by photo and silkscree
 | SWD probe | any RP2040 board with `debugprobe_on_pico.uf2` (`raspberrypi/debugprobe`, tested v2.3.1) | an ST-Link works too (`interface/stlink.cfg`) |
 | `openocd` | Debian package `openocd` (tested 0.12.0) | |
 | `tools/hoverboard_swd.sh` | this repo | `info`, `backup`, `unlock --erase`, `flash`, `rtt` |
+| `tools/hoverboard_build.sh MODEL` | this repo | clones the pinned sources (`hoverboard/<model>/build.conf`) into `build/hoverboard/`, applies the model's `config.h`, builds `firmware-id<N>.bin` per `SLAVE_ID` + `SHA256SUMS` into `hoverboard/<model>/` |
+| `tools/hoverboard_uart.py` | this repo | `REMOTE_UARTBUS` bench test from the PC: commands at 20 Hz, prints replies; needs `python3-serial` |
 | Gen2.x firmware | `git clone https://github.com/RoboDurden/Hoverboard-Firmware-Hack-Gen2.x-GD32` (tested `c63b29a`) | builds with the system `gcc-arm-none-eabi` + `make` |
 | GD32 SPL (needed by the Gen2.x Makefile) | `git clone -b hoverboardhavoc/add__PIO_DONT_SET_CLOCK_SOURCE__ https://github.com/hoverboardhavoc/gd32-pio-spl-package.git HoverBoardGigaDevice/lib/framework` (tested `8849cb2`) | the same package `platformio.ini` uses; the Makefile patches its clock setup to the internal oscillator |
 | Multimeter with continuity beep, fine probe tip | | finding SWD pads |
 | Lab supply 36–42 V with current limit, or a 2–3 A fuse | | first motor test (`HOV-004`) |
 
-Third-party code is kept outside the repo (e.g. `~/Downloads/hoverboard/`): it is only built and flashed onto
-the hoverboard, nothing of it ends up in AeroLink.
+Third-party sources stay outside the repo (`build/hoverboard/`, cloned by `hoverboard_build.sh`); the repo keeps
+per model only what we change and what we flash: `hoverboard/<model>/config.h`, `build.conf`, the images and
+the GPL-3.0 license text ([hoverboard/README.md](../hoverboard/README.md)). **A known model needs no build:**
+flash the committed images (steps 5, 6, 11, 12 and the model section).
 
 ## Common procedure
 
@@ -85,24 +89,57 @@ the hoverboard, nothing of it ends up in AeroLink.
     current-limited supply or fused battery on the battery connector, press the power button. The wheel swings
     back and forth slowly (period `REMOTE_PERIOD`), the LEDs follow the hall sensors. Jerking, humming, or the
     supply hitting its current limit → power off at once: phase or hall order is wrong, or the layout is.
-11. **Robot firmware** (⏳): rebuild with the remote protocol the RP2040 speaks (see "Driving it from the
-    RP2040"), flash, repeat the motor test, then connect the RP2040.
-12. **Record** the result in the model's section (date, firmware commit, what worked).
+11. **UART firmware**: `hoverboard/<model>/firmware-id0.bin` (left) / `firmware-id1.bin` (right), flashed the
+    same way (battery off, probe 3V3 on). New model: copy a similar model's directory, put its `config.h` from
+    upstream there with `REMOTE_UARTBUS` on, `REMOTE_DUMMY` and `INACTIVITY_TIMEOUT` off, then
+    `tools/hoverboard_build.sh <model>`. Wire the UART pads to
+    the probe's own UART (debugprobe: GP4 = TX → board RX, GP5 = RX ← board TX, shows up as `/dev/ttyACM0`; any
+    3.3 V USB-UART works too, never 5 V). Still on the probe's 3.3 V, `tools/hoverboard_uart.py` must get a reply
+    for every command (`sent 20, replies 20`); none → wiring (bridge GP4–GP5 and the bytes must come back).
+12. **UART motor test**: probe 3V3 off, wheel up, battery on, power button. `hoverboard_uart.py` (speed 0) shows
+    the battery voltage, then `hoverboard_uart.py --speed 100 --time 3`: the wheel turns slowly, the odometer
+    counts, and the wheel stops by itself ~0.5 s after the last command (`HOV-001`; the board stays silent then,
+    watch the odometer `iOdom` over SWD if in doubt).
+13. **Record** the result in the model's section (date, firmware commit, what worked).
 
-## Driving it from the RP2040 (⏳ not built yet)
+## Driving it from the RP2040 (⏳ driver built and host-tested, not yet run on the boards)
 
-Planned for Gen2.x: both boards run `SINGLE` firmware with `REMOTE_UARTBUS` and different `SLAVE_ID`s (0 =
-left, 1 = right); the RP2040 is the bus master on one UART (19200 baud, RP2040 TX → both boards' RX, both
-boards' TX → RP2040 RX; how two TX outputs share one line is still to be checked in the Gen2.x sources). Every board stops on its own when its
-commands stop (`HOV-001`) and answers only when addressed, with speed, voltage, current and odometer — which
-maps onto TELEMETRY ([03](03-usb-link.md)). Alternative: `MASTER` + `SLAVE` firmware over the original
-master–slave cable, the RP2040 talks `REMOTE_UART` to the master only. The choice is open question Q1
-([07](07-open-questions.md)); the RP2040 side becomes `rp2040/src/motor_hoverboard.c`
-(`AEROLINK_MOTOR_DRIVER=hoverboard`).
+Gen2.x (Q1, resolved): both boards run `SINGLE` firmware with `REMOTE_UARTBUS`, each on **its own RP2040
+UART** — no shared bus, no master–slave cable. The driver is `rp2040/src/motor_hoverboard.c` (UART glue) +
+`hoverbus.c` (protocol, host-tested in `rp2040/test/test_hover.c`), selected by `MOTOR_DRIVER=hoverboard`, the
+default of `make rp2040`; `MOTOR_DRIVER=sim` builds the simulator for bench tests on a bare board.
 
-Known issue to check first: Gen2.x issue #153 reports on the same `TT-SD2.2` board that `REMOTE_UART`
-telemetry works but speed commands do not move the motor, while `REMOTE_DUMMY` does. Test the UART remote with
-a USB-UART adapter before writing the driver.
+| Board | `SLAVE_ID` | RP2040 | Board pad |
+|-------|-----------|--------|-----------|
+| left  | 0 | UART0: GP0 = TX, GP1 = RX | GP0 → `R`, GP1 ← `T` |
+| right | 1 | UART1: GP4 = TX, GP5 = RX | GP4 → `R`, GP5 ← `T` |
+
+Plus one GND per board (`G` pad). Never connect the `5V` pad. GP4/GP5 are the same pins the debugprobe's UART
+uses, so a board wired for the bench test (step 12) stays wired the same way.
+
+- Every 20 ms each board gets the latest control output (‰ = the firmware's PWM −1000..1000, the right side
+  inverted because its motor is mounted mirrored; ⏳ check the directions on the robot) with wState 32 (battery
+  level on the board's LEDs). When the RP2040 stops sending, the boards stop on their own (`HOV-001`).
+- A board with no valid reply for 300 ms (2 s grace after power-up) → `FAULT_MOTOR_LINK_LOST` → `FAULT`
+  (`SAFE-006`); a reply with the other board's id does not count, so swapped cables show up as link lost.
+  TELEMETRY: battery = mean of both boards, wheel speed in ‰ of 15 km/h (rough, ⏳ calibrate), below 32 V
+  `FAULT_LOW_BATTERY` (not critical).
+- The debug log needs a UART that is now taken, so this build logs over **RTT** instead of GP0: a second RP2040
+  as debugprobe on the robot's SWD pins, then `OPENOCD_TARGET=target/rp2040.cfg RTT_RAM="0x20000000 0x42000"
+  tools/hoverboard_swd.sh rtt`. Look for `hoverboard left/right link up/lost`.
+
+`REMOTE_UARTBUS` frames (Gen2.x `Src/remoteUartBus.c`, reference encoder in `tools/hoverboard_uart.py`), all
+little-endian, CRC = CRC-16/XMODEM (poly 0x1021, init 0) over everything before it:
+
+| Frame | Layout | Bytes |
+|-------|--------|-------|
+| command (type 0) | `'/'`, `0`, slave id, int16 speed, uint8 wState, uint16 crc | 8 |
+| reply | uint16 `0xABCD`, slave id, int16 speed (100 × km/h), uint16 volt (100 × V), int16 amp (100 × A), int32 odometer (hall steps), uint16 crc | 15 |
+
+A board answers only a valid command with its own id, right after it; with no commands it stays silent. wState
+bits: 1/2/4 LEDs green/orange/red, 8/16 up/down, 32 battery LEDs, 64 disable motor, 128 shut off. After a CRC
+error the board needs two further `'/'` starts to resync. Gen2.x issue #153 (`REMOTE_UART` not driving on the
+same board) does not affect `REMOTE_UARTBUS`: tested OK, see the model section.
 
 ## Models
 
@@ -119,15 +156,28 @@ a USB-UART adapter before writing the driver.
   **4 = 3.3 V** (pin 36). Verified by continuity.
 - **Remote UART:** pads `REMOTE  T R 5V` (+ `G`) next to the SWD row = USART0 PB6/PB7 (Gen2.x `REMOTE_USART 0`,
   "the empty header close to the flash header"). Logic is 3.3 V; never connect the `5V` pad to the RP2040.
+  Verified: `T` = board TX (PB6) → probe GP5, `R` = board RX (PB7) ← probe GP4, GND via the SWD `G` pad.
 - **Chip as delivered:** device ID `0x13030410` (GD32, rev `0x1303`), 64 KB flash, 8 KB RAM, read protection
   **on** (option byte `0x5A`) → stock firmware not saved, unlocked with mass erase.
 - **openocd:** `target/stm32f1x.cfg` with `CPUTAPID 0` (DPIDR `0x1ba01477`, Cortex-M3) — the default of
   `tools/hoverboard_swd.sh`. Unlock took effect after `reset halt`, no power cycle needed.
-- **Firmware:** Gen2.x `c63b29a`, `Inc/config.h` as shipped: `LAYOUT 1`, `LAYOUT_SUB 1`, `SINGLE`,
+- **Firmware:** [`hoverboard/gen2x-tt-sd2.2/`](../hoverboard/gen2x-tt-sd2.2/) — `firmware-id0.bin` (left),
+  `firmware-id1.bin` (right), 20 296 bytes each. Gen2.x `c63b29a`, our `config.h` = upstream with `REMOTE_UARTBUS`,
+  `SLAVE_ID`, `RTT_REMOTE` on and `REMOTE_DUMMY`, `INACTIVITY_TIMEOUT` off. Upstream `Inc/config.h` as shipped: `LAYOUT 1`, `LAYOUT_SUB 1`, `SINGLE`,
   `REMOTE_DUMMY` (`REMOTE_PERIOD 6`, `TEST_HALL2LED`, `RTT_REMOTE`), `BLDC_SINE`, `DRIVING_MODE 0` (PWM),
-  `BAT_CELLS 10`, `DC_CUR_LIMIT 15`. Image 26 368 bytes.
-- **Results:** first board flashed, RTT log OK on 3.3 V, the wheel swings under power (2026-10-30). Second
-  board ⏳, UART remote ⏳.
+  `BAT_CELLS 10`, `DC_CUR_LIMIT 15`, `INACTIVITY_TIMEOUT 8` (`SINGLE` = `MASTER_OR_SINGLE`: the board **switches
+  itself off after 8 min without driving**, only the power button brings it back; off in our images). Image 26 368 bytes. UART variant: `REMOTE_UARTBUS`, `SLAVE_ID 0`, no
+  `REMOTE_DUMMY` (its RTT status log goes with it), 20 332 bytes; one build per board, only `SLAVE_ID` differs
+  (0 and 1).
+- **Results** (first board):
+  - 2026-10-30: dummy firmware, RTT log OK on 3.3 V, the wheel swings under power.
+  - 2026-10-31: `REMOTE_UARTBUS` from the PC through the debugprobe UART: 60/60 replies, speed 100 → 0.6 km/h,
+    76 hall steps in 3 s, the wheel stops by itself 0.5–0.8 s after the last command. Positive speed counts the
+    odometer **down** on this wheel (the driver maps direction per side). Voltage reads 28 V on the battery as
+    found (⏳ compare with a multimeter: either the battery is nearly empty or the divider needs calibration).
+  - 2026-10-31, second board: read protection on as well, unlocked, `SLAVE_ID 1` flashed; on the probe's 3.3 V
+    it answers id 1 (20/20) and ignores id 0. On the battery: speed 100 → 0.58 km/h, 68 hall steps in 3 s, odometer
+    again counts down, stops by itself after the last command. Reads 28.4–29.6 V like the first board.
 
 ### Template for a new model
 
@@ -152,4 +202,5 @@ a USB-UART adapter before writing the driver.
 | Gen2.x build: `gd32f1x0.h: No such file or directory` | the GD32 SPL is missing in `HoverBoardGigaDevice/lib/framework` (Tools) |
 | `_read`/`_write is not implemented` warnings at link time | harmless (newlib stubs) |
 | `rtt`: no control block found | the firmware is built without `RTT_REMOTE`, or it is not running (check `info`) |
+| Board dead after a few idle minutes, needs the power button | `INACTIVITY_TIMEOUT` (8 min) in Gen2.x `config.h`; comment it out for robots |
 | Testing with the hoverboard charger as the power supply | build with `DISABLE_CHARGESTATE` (`config.h`), otherwise the firmware treats it as charging |

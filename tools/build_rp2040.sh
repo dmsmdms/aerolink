@@ -9,6 +9,7 @@ FW_BUILD="$FW_DIR/build"
 export PICO_SDK_PATH="${PICO_SDK_PATH:-/opt/pico-sdk}"
 PICO_BOARD="${PICO_BOARD:-pico}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
+MOTOR_DRIVER="${MOTOR_DRIVER:-hoverboard}"
 
 if [ ! -f "$PICO_SDK_PATH/pico_sdk_init.cmake" ]; then
     echo "❌ Error: Pico SDK not found at $PICO_SDK_PATH (set PICO_SDK_PATH)."
@@ -17,10 +18,11 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-echo "🔧 Building RP2040 firmware (board: $PICO_BOARD, $BUILD_TYPE, SDK: $PICO_SDK_PATH)..."
+echo "🔧 Building RP2040 firmware (board: $PICO_BOARD, motors: $MOTOR_DRIVER, $BUILD_TYPE, SDK: $PICO_SDK_PATH)..."
 cmake -S "$FW_DIR" -B "$FW_BUILD" -G Ninja \
     -DPICO_BOARD="$PICO_BOARD" \
-    -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DAEROLINK_MOTOR_DRIVER="$MOTOR_DRIVER"
 cmake --build "$FW_BUILD"
 
 UF2_SOURCE="$FW_BUILD/aerolink.uf2"

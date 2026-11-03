@@ -16,7 +16,8 @@
 int failures;
 int checks;
 
-void test_fw(void);  // test_fw.c
+void test_fw(void);     // test_fw.c
+void test_hover(void);  // test_hover.c
 
 // ---------------------------------------------------------------------------------------------
 // proto
@@ -589,6 +590,7 @@ int main(int argc, char **argv) {
     test_link();
     test_link_fw();
     test_fw();
+    test_hover();
 
     if (failures) {
         fprintf(stderr, "❌ %d of %d checks failed\n", failures, checks);

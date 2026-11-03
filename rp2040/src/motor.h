@@ -1,5 +1,5 @@
-// Motor driver interface. The hoverboard mainboard is not chosen yet (docs/07 Q1);
-// motor_sim.c implements it until a real driver exists. Exactly one driver is linked.
+// Motor driver interface. Exactly one driver is linked (MOTOR_DRIVER): motor_hoverboard.c drives two Gen2.x
+// hoverboard boards (docs/11-hoverboard.md), motor_sim.c simulates wheels for bench tests without them.
 
 #pragma once
 

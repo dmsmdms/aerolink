@@ -16,8 +16,13 @@ find_program(PYTHON3_BIN python3 REQUIRED)
 
 pico_sdk_init()
 
-# Motor driver selection (docs/02-architecture.md "Motor driver"). Only "sim" exists for now.
-set(AEROLINK_MOTOR_DRIVER "sim" CACHE STRING "Motor driver implementation (src/motor_<name>.c)")
+# Motor driver selection (docs/02-architecture.md "Motor driver"): "hoverboard" (Gen2.x boards on UART0 + UART1,
+# the robot) or "sim" (no hardware, bench tests with a bare board).
+set(AEROLINK_MOTOR_DRIVER "hoverboard" CACHE STRING "Motor driver implementation (src/motor_<name>.c)")
+set(AEROLINK_MOTOR_SOURCES src/motor_${AEROLINK_MOTOR_DRIVER}.c)
+if (AEROLINK_MOTOR_DRIVER STREQUAL "hoverboard")
+    list(APPEND AEROLINK_MOTOR_SOURCES src/hoverbus.c)
+endif()
 
 # Flash layout: loader | boot record | active | staging | backup (src/fwstore.h,
 # docs/03-usb-link.md "Firmware update over the link").
@@ -52,7 +57,7 @@ add_executable(aerolink
     src/fwupdate.c
     src/flash_rp2040.c
     src/usb_aoa.c
-    src/motor_${AEROLINK_MOTOR_DRIVER}.c
+    ${AEROLINK_MOTOR_SOURCES}
 )
 
 target_compile_options(aerolink PRIVATE -Wall -Wextra)
@@ -72,8 +77,14 @@ target_link_libraries(aerolink
     tinyusb_host
 )
 
-# The native USB port belongs to the phone link (AOA host), debug log goes to UART0 (GP0/GP1)
-pico_enable_stdio_uart(aerolink 1)
+# The native USB port belongs to the phone link (AOA host). Debug log: UART0 (GP0/GP1) with the sim driver; the
+# hoverboard driver needs both UARTs, so its log goes to RTT over SWD (tools/hoverboard_swd.sh rtt with a probe).
+if (AEROLINK_MOTOR_DRIVER STREQUAL "hoverboard")
+    pico_enable_stdio_uart(aerolink 0)
+    pico_enable_stdio_rtt(aerolink 1)
+else()
+    pico_enable_stdio_uart(aerolink 1)
+endif()
 pico_enable_stdio_usb(aerolink 0)
 pico_add_linker_script_override_path(aerolink ${CMAKE_CURRENT_LIST_DIR}/ld/app
     FILES memory_flash.incl section_boot2.incl)

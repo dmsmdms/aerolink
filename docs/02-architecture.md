@@ -45,9 +45,10 @@
 
 The hoverboard mainboards are reflashed with open firmware ([11](11-hoverboard.md); the first robot: Gen2.x
 `TT-SD2.2`, RoboDurden Gen2.x firmware). The firmware talks to motors through a small driver interface
-(`rp2040/src/motor.h`); `motor_sim.c` is a simulator used until the real driver exists (announced with the
-`MOTOR_SIMULATED` capability). The real driver will speak the Gen2.x UART protocol (`REMOTE_UARTBUS` or
-`REMOTE_UART`, Q1); Gen1 boards would use EFeru `hoverboard-firmware-hack-FOC`.
+(`rp2040/src/motor.h`): `motor_hoverboard.c` speaks Gen2.x `REMOTE_UARTBUS` to each board on its own UART
+([11](11-hoverboard.md) "Driving it from the RP2040"); `motor_sim.c` simulates the wheels for bench tests on a
+bare board (announced with the `MOTOR_SIMULATED` capability). Gen1 boards would use EFeru
+`hoverboard-firmware-hack-FOC` and a driver of their own.
 
 ## Concurrency rules
 

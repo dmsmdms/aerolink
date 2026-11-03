@@ -5,9 +5,10 @@
 PICO_SDK_PATH ?= /opt/pico-sdk
 PICO_BOARD    ?= pico
 BUILD_TYPE    ?= Release
+MOTOR_DRIVER  ?= hoverboard
 ANDROID_VARIANT ?= release
 
-export PICO_SDK_PATH PICO_BOARD BUILD_TYPE ANDROID_VARIANT
+export PICO_SDK_PATH PICO_BOARD BUILD_TYPE MOTOR_DRIVER ANDROID_VARIANT
 
 TOOLS := $(CURDIR)/tools
 
@@ -90,4 +91,5 @@ help: ## Show this help
 	@echo "  PICO_SDK_PATH  Pico SDK location        (current: $(PICO_SDK_PATH))"
 	@echo "  PICO_BOARD     Pico SDK board name      (current: $(PICO_BOARD))"
 	@echo "  BUILD_TYPE     Firmware CMake build type (current: $(BUILD_TYPE))"
+	@echo "  MOTOR_DRIVER   hoverboard or sim         (current: $(MOTOR_DRIVER))"
 	@echo "  ANDROID_VARIANT release or debug         (current: $(ANDROID_VARIANT))"

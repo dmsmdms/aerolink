@@ -5,13 +5,16 @@
 #   unlock --erase    remove read protection = MASS ERASE, the stock firmware is gone for good
 #   flash FILE.bin    write FILE.bin at the start of flash, verify, start it
 #   rtt               print the firmware's RTT log until Ctrl-C (Gen2.x with RTT_REMOTE)
-# OPENOCD_TARGET picks the openocd target script (default target/stm32f1x.cfg: GD32F130/GD32F103/STM32F103).
+# OPENOCD_TARGET picks the openocd target script (default target/stm32f1x.cfg: GD32F130/GD32F103/STM32F103),
+# RTT_RAM the RAM range searched for the RTT block. The robot's RP2040 log (MOTOR_DRIVER=hoverboard):
+#   OPENOCD_TARGET=target/rp2040.cfg RTT_RAM="0x20000000 0x42000" hoverboard_swd.sh rtt
 # info, backup and rtt never halt the CPU: a halted MCU leaves the motor PWM frozen in its last state. unlock and
 # flash do halt it, so run them with the battery disconnected and the board on 3.3 V from the probe.
 set -e
 
 TARGET_CFG="${OPENOCD_TARGET:-target/stm32f1x.cfg}"
 RTT_PORT=19021
+RTT_RAM="${RTT_RAM:-0x20000000 8192}"
 
 if ! command -v openocd > /dev/null; then
     echo "❌ Error: openocd not found (Debian package: openocd)."
@@ -76,7 +79,7 @@ flash)
 rtt)
     # openocd finds the SEGGER RTT control block in RAM and serves channel 0 on a local TCP port.
     openocd -f interface/cmsis-dap.cfg -c "transport select swd; adapter speed 1000; set CPUTAPID 0" \
-        -f "$TARGET_CFG" -c init -c "rtt setup 0x20000000 8192 {SEGGER RTT}" -c "rtt start" \
+        -f "$TARGET_CFG" -c init -c "rtt setup $RTT_RAM {SEGGER RTT}" -c "rtt start" \
         -c "rtt server start $RTT_PORT 0" > /tmp/hoverboard_rtt.log 2>&1 &
     trap 'kill $! 2> /dev/null' EXIT
     sleep 3
@@ -88,7 +91,7 @@ while data := s.recv(4096):
 "
     ;;
 *)
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

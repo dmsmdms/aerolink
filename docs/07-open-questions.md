@@ -2,7 +2,6 @@
 
 | # | Question | Impacts |
 |---|----------|---------|
-| Q1 | Hoverboard interface: Gen2.x `REMOTE_UARTBUS` to both boards or `REMOTE_UART` to the master ([11](11-hoverboard.md)); firmware chosen: reflash with open firmware, first board Gen2.x `TT-SD2.2` | Real motor driver, TELEMETRY fields. Until then: `motor_sim` |
 | Q4 | Final phone models (first: Samsung SM-J710F, Android 6) | AOA quirks, sysfs charge node, H.264 encoder, Camera2 level |
 | Q5 | Peripherals (cargo lock, lid sensor, lights, range sensors) | Messages `0x20–0x3F` / `0xA0–0xBF`, `caps` |
 | Q6 | Target stick-to-wheel latency, server location | Backend, TURN placement |
@@ -13,6 +12,7 @@
 
 | # | Decision |
 |---|----------|
+| Q1 | Hoverboard: boards reflashed with open firmware (first robot Gen2.x `TT-SD2.2`), `REMOTE_UARTBUS` with each board on its own RP2040 UART (`motor_hoverboard.c`, [11](11-hoverboard.md)) |
 | Q2 | USB topology: Android Open Accessory, RP2040 = host, phone charged from the robot battery |
 | Q3 | RP2040 board: Pico-compatible clone with USB-C, `PICO_BOARD=pico` |
 | Q9 | Admin map: public OpenStreetMap tiles for now (attribution shown, light use within the OSMF tile policy); a paid provider or self-hosted tiles later if the fleet grows (`ADM-011`) |
